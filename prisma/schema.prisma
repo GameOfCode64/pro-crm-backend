@@ -1,0 +1,327 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ============================
+ * ENUMS
+ * ============================
+ */
+
+enum Role {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+/**
+ * 🔵 HIGH-LEVEL PIPELINE STATUS (KANBAN)
+ */
+enum LeadStatus {
+  FRESH
+  IN_PROGRESS
+  FOLLOW_UP
+  WON
+  LOST
+}
+
+/**
+ * 🔵 ACTIVITY TYPE
+ */
+enum LeadActivityType {
+  CALL
+  STATUS_CHANGE
+  REMARK
+  ASSIGNED
+}
+
+/**
+ * 🔵 CALL RESULT (EMPLOYEE SELECTS THIS)
+ */
+enum CallOutcome {
+  NOT_PICKED_UP
+  BUSY
+  SWITCHED_OFF
+  CALL_LATER
+  CALL_BACK_SCHEDULED
+  INTERESTED
+  NOT_INTERESTED
+  WRONG_NUMBER
+}
+
+/**
+ * ============================
+ * USER
+ * ============================
+ */
+
+model User {
+  id       String @id @default(uuid())
+  name     String
+  email    String @unique
+  password String
+  role     Role
+
+  isActive Boolean @default(true)
+
+  // 🔐 AUTH SECURITY
+  failedLoginCount Int       @default(0)
+  lockUntil        DateTime?
+
+  // 🔑 TEAM MEMBERSHIP
+  teamId String?
+  team   Team?   @relation("TeamMembers", fields: [teamId], references: [id])
+
+  // 🔑 TEAM MANAGER (1–1)
+  managedTeam Team? @relation("TeamManager")
+
+  // 🔑 LEADS ASSIGNED TO EMPLOYEE
+  assignedLeads Lead[] @relation("UserAssignedLeads")
+
+  // 🔑 ACTIVITIES DONE BY USER
+  leadActivities LeadActivity[] @relation("UserLeadActivities")
+
+  attendance Attendance[]
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  auditLogs     AuditLog[]
+  forms         Form[]
+  formResponses FormResponse[]
+}
+
+/**
+ * ============================
+ * TEAM
+ * ============================
+ */
+
+model Team {
+  id   String @id @default(uuid())
+  name String
+
+  // 🔗 ONE MANAGER → ONE TEAM
+  managerId String @unique
+  manager   User   @relation("TeamManager", fields: [managerId], references: [id])
+
+  // 🔗 TEAM MEMBERS
+  users User[] @relation("TeamMembers")
+
+  // 🔗 TEAM LEADS
+  leads Lead[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  forms     Form[]
+}
+
+/**
+ * ============================
+ * ATTENDANCE
+ * ============================
+ */
+
+model Attendance {
+  id       String    @id @default(uuid())
+  userId   String
+  date     DateTime
+  clockIn  DateTime
+  clockOut DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, date])
+}
+
+/**
+ * ============================
+ * LEAD
+ * ============================
+ */
+
+model Lead {
+  id String @id @default(uuid())
+
+  // 🔹 FROM EXCEL
+  companyName String
+  personName  String
+  phone       String
+
+  // 🔵 CURRENT PIPELINE STATUS
+  status LeadStatus @default(FRESH)
+
+  // 🔔 FOLLOW-UP DATE (FOR CALL_LATER)
+  followUpAt DateTime?
+
+  // 🔑 ASSIGNED EMPLOYEE
+  assignedToId String
+  assignedTo   User   @relation("UserAssignedLeads", fields: [assignedToId], references: [id])
+
+  // 🔑 TEAM
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id])
+
+  // 🔥 EXTRA DATA FROM EXCEL
+  meta Json?
+
+  activities LeadActivity[]
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  formResponses FormResponse[]
+
+  @@index([assignedToId])
+  @@index([teamId])
+  @@index([phone])
+  @@index([status])
+}
+
+/**
+ * ============================
+ * LEAD ACTIVITY (CALLS / HISTORY / ANALYTICS)
+ * ============================
+ */
+
+model LeadActivity {
+  id String @id @default(uuid())
+
+  leadId String
+  userId String
+
+  type LeadActivityType
+
+  // 🔵 STATUS CHANGE
+  oldStatus LeadStatus?
+  newStatus LeadStatus?
+
+  // 🔵 CALL RESULT (EMPLOYEE SELECTS)
+  callOutcome CallOutcome?
+
+  remark String?
+
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id])
+  user User @relation("UserLeadActivities", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([leadId])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  action   String
+  entity   String
+  entityId String?
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  meta Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([entity])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model Form {
+  id String @id @default(uuid())
+
+  name        String
+  description String?
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id])
+
+  schema Json // form structure (fields)
+
+  isActive Boolean @default(true)
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  responses FormResponse[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([teamId])
+}
+
+model FormResponse {
+  id String @id @default(uuid())
+
+  formId String
+  form   Form   @relation(fields: [formId], references: [id])
+
+  leadId String
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  values Json // user-filled values
+
+  createdAt DateTime @default(now())
+
+  @@index([formId])
+  @@index([leadId])
+  @@index([userId])
+}
+
+///////////==============================================================
+
+model Setting {
+  id String @id @default(uuid())
+
+  scope  SettingScope
+  teamId String? // null = system-wide
+
+  key   String
+  value Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([scope, teamId, key])
+  @@index([teamId])
+}
+
+enum SettingScope {
+  SYSTEM
+  TEAM
+}
+
+// ============================================================================
+
+model Integration {
+  id String @id @default(uuid())
+
+  provider IntegrationProvider
+  teamId   String
+  isActive Boolean             @default(true)
+
+  config Json // API keys, tokens, settings
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, teamId])
+}
+
+enum IntegrationProvider {
+  JUSTDIAL
+  INDIAMART
+}

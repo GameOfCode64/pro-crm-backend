@@ -1,0 +1,10 @@
+export const ROLES = {
+  ADMIN: "ADMIN",
+  MANAGER: "MANAGER",
+  EMPLOYEE: "EMPLOYEE",
+};
+
+export const LOGIN_SECURITY = {
+  MAX_ATTEMPTS: 5,
+  LOCK_TIME_MINUTES: 15,
+};
