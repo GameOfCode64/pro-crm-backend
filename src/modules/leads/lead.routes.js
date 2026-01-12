@@ -20,6 +20,7 @@ import {
   escalateOverdue,
   getLeadGroups,
   getPerformance,
+  getLeads,
 } from "./lead.controller.js";
 
 const router = express.Router();
@@ -29,6 +30,9 @@ const upload = multer({ dest: "uploads/" });
  * EMPLOYEE
  */
 router.get("/my", authMiddleware, roleMiddleware("EMPLOYEE"), getMyLeads);
+// router.get("/", authMiddleware, roleMiddleware("MANAGER"), getManagerLeads);
+router.get("/", authMiddleware, roleMiddleware("MANAGER"), getLeads);
+
 router.post(
   "/reassign",
   authMiddleware,

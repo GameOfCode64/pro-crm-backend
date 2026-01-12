@@ -6,7 +6,7 @@ export const validateLogin = (body) => {
 };
 
 export const validateCreateUser = (body) => {
-  const required = ["email", "password", "role"];
+  const required = ["email", "password"];
   for (const field of required) {
     if (!body[field]) return `${field} is required`;
   }

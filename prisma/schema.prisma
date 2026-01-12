@@ -24,6 +24,7 @@ enum Role {
  */
 enum LeadStatus {
   FRESH
+  ASSIGNED
   IN_PROGRESS
   FOLLOW_UP
   WON
@@ -161,8 +162,8 @@ model Lead {
   followUpAt DateTime?
 
   // 🔑 ASSIGNED EMPLOYEE
-  assignedToId String
-  assignedTo   User   @relation("UserAssignedLeads", fields: [assignedToId], references: [id])
+  assignedToId String?
+  assignedTo   User?   @relation("UserAssignedLeads", fields: [assignedToId], references: [id])
 
   // 🔑 TEAM
   teamId String

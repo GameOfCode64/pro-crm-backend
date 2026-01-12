@@ -13,6 +13,25 @@ export const getMyLeads = async (req, res, next) => {
   }
 };
 
+export const getLeads = async (req, res, next) => {
+  try {
+    const { statuses, outcomes, employeeIds, page = 1, limit = 50 } = req.query;
+
+    const result = await service.getFilteredLeads({
+      manager: req.user,
+      statuses,
+      outcomes,
+      employeeIds,
+      page: Number(page),
+      limit: Number(limit),
+    });
+
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+};
+
 export const getLeadById = async (req, res, next) => {
   try {
     const lead = await service.getLeadById(req.params.id);
@@ -92,7 +111,7 @@ export const reassignLeads = async (req, res, next) => {
   try {
     const { leadIds, employeeIds } = req.body;
 
-    const result = await service.reassignLeads({
+    const count = await reassignLeadsService({
       manager: req.user,
       leadIds,
       employeeIds,
@@ -100,10 +119,10 @@ export const reassignLeads = async (req, res, next) => {
 
     res.json({
       message: "Leads reassigned successfully",
-      reassigned: result,
+      count,
     });
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
