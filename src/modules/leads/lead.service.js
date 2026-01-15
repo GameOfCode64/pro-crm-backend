@@ -6,8 +6,10 @@ import {
   emitFollowUpUpdate,
   emitLeadReassigned,
 } from "../dashboard/dashboard.realtime.js";
+import { getLeaderboardDate } from "./lead.validation.js";
+import { getTeamLeaderboard } from "../leaderboard/leaderboard.service.js";
 
-const AUTO_STATUS_BY_OUTCOME = {
+const OUTCOME_TO_STATUS = {
   INTERESTED: "IN_PROGRESS",
   CALL_LATER: "FOLLOW_UP",
   CALL_BACK_SCHEDULED: "FOLLOW_UP",
@@ -15,14 +17,114 @@ const AUTO_STATUS_BY_OUTCOME = {
   WRONG_NUMBER: "LOST",
 };
 
+export const completeLeadService = async ({
+  userId,
+  leadId,
+  outcomeId,
+  outcomeReasonId,
+  remark,
+  formValues,
+}) => {
+  if (!outcomeId) {
+    throw new Error("Call outcome is required");
+  }
+
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+  });
+
+  if (!lead) throw new Error("Lead not found");
+
+  const outcome = await prisma.callOutcomeConfig.findUnique({
+    where: { id: outcomeId },
+    select: { name: true },
+  });
+
+  if (!outcome) throw new Error("Invalid outcome");
+
+  const newStatus = OUTCOME_TO_STATUS[outcome.name] ?? lead.status;
+
+  await prisma.$transaction(async (tx) => {
+    // 1️⃣ Save / update form response
+    if (formValues) {
+      // Fetch the active form with its schema
+      const activeForm = await tx.form.findFirst({
+        where: { isActive: true, teamId: lead.teamId },
+        select: { id: true, schema: true },
+      });
+
+      if (!activeForm) {
+        throw new Error("No active form found for this team");
+      }
+
+      await tx.formResponse.upsert({
+        where: {
+          formId_leadId_userId: {
+            formId: activeForm.id,
+            leadId,
+            userId,
+          },
+        },
+        update: {
+          values: formValues,
+        },
+        create: {
+          formId: activeForm.id,
+          leadId,
+          userId,
+          values: formValues,
+          schemaSnapshot: activeForm.schema, // Add this field
+        },
+      });
+    }
+
+    // 2️⃣ Update lead
+    await tx.lead.update({
+      where: { id: leadId },
+      data: {
+        status: newStatus,
+      },
+    });
+
+    // 3️⃣ Create call activity
+    await tx.leadActivity.create({
+      data: {
+        leadId,
+        userId,
+        type: "CALL",
+        outcomeId,
+        outcomeReasonId: outcomeReasonId ?? null,
+        remark: remark ?? `Call outcome: ${outcome.name}`,
+        oldStatus: lead.status,
+        newStatus,
+      },
+    });
+  });
+
+  return { message: "Lead completed successfully" };
+};
+
 const enumArray = (values, enumName) =>
   Prisma.join(values.map((v) => Prisma.sql`${v}::"${Prisma.raw(enumName)}"`));
 
-export const getMyLeads = (userId) => {
-  return prisma.lead.findMany({
-    where: { assignedToId: userId },
-    orderBy: { updatedAt: "desc" },
-  });
+export const getMyLeads = async (userId) => {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  return prisma.$queryRaw`
+    SELECT
+      l.*,
+      EXISTS (
+        SELECT 1
+        FROM "LeadActivity" la
+        WHERE la."leadId" = l.id
+          AND la.type = 'CALL'
+          AND la."createdAt" >= ${todayStart}
+      ) AS "calledToday"
+    FROM "Lead" l
+    WHERE l."assignedToId" = ${userId}
+    ORDER BY l."updatedAt" DESC
+  `;
 };
 
 export const getFilteredLeads = async ({
@@ -50,24 +152,78 @@ export const getFilteredLeads = async ({
 
   const offset = (page - 1) * limit;
 
-  const leads = await prisma.$queryRaw(
+  const leads = await prisma.$queryRaw`
+  SELECT
+    l.*,
+    u.id   AS "assignedToId",
+    u.name AS "assignedToName",
+    oc.name AS "lastOutcome"
+  FROM "Lead" l
+
+  LEFT JOIN "User" u
+    ON u.id = l."assignedToId"
+
+  -- 🔥 latest CALL activity
+  LEFT JOIN LATERAL (
+    SELECT la."outcomeId"
+    FROM "LeadActivity" la
+    WHERE la."leadId" = l.id
+      AND la.type = 'CALL'
+    ORDER BY la."createdAt" DESC
+    LIMIT 1
+  ) last_call ON TRUE
+
+  -- 🔥 join outcome config
+  LEFT JOIN "CallOutcomeConfig" oc
+    ON oc.id = last_call."outcomeId"
+
+  WHERE l."teamId" = ${teamId}
+
+  ${
+    statusList.length
+      ? Prisma.sql`AND l.status = ANY(${Prisma.sql`ARRAY[${Prisma.join(
+          statusList
+        )}]`}::"LeadStatus"[])`
+      : Prisma.empty
+  }
+
+  ${
+    employeeList.length
+      ? Prisma.sql`AND l."assignedToId" = ANY(${Prisma.sql`ARRAY[${Prisma.join(
+          employeeList
+        )}]`}::uuid[])`
+      : Prisma.empty
+  }
+
+  ${
+    outcomeList.length
+      ? Prisma.sql`AND oc.name = ANY(${Prisma.sql`ARRAY[${Prisma.join(
+          outcomeList
+        )}]`}::text[])`
+      : Prisma.empty
+  }
+
+  ORDER BY l."updatedAt" DESC
+  LIMIT ${limit}
+  OFFSET ${offset}
+`;
+
+  const countResult = await prisma.$queryRaw(
     Prisma.sql`
-    SELECT
-      l.*,
-      u.id as "assignedToId",
-      u.name as "assignedToName"
+    SELECT COUNT(*)::int AS count
     FROM "Lead" l
-    LEFT JOIN "User" u
-      ON u.id = l."assignedToId"
 
     LEFT JOIN LATERAL (
-      SELECT la."callOutcome"
+      SELECT la."outcomeId"
       FROM "LeadActivity" la
       WHERE la."leadId" = l.id
         AND la.type = 'CALL'
       ORDER BY la."createdAt" DESC
       LIMIT 1
     ) last_call ON TRUE
+
+    LEFT JOIN "CallOutcomeConfig" oc
+      ON oc.id = last_call."outcomeId"
 
     WHERE l."teamId" = ${teamId}
 
@@ -89,55 +245,12 @@ export const getFilteredLeads = async ({
 
     ${
       outcomeList.length
-        ? Prisma.sql`AND last_call."callOutcome" = ANY(${Prisma.sql`ARRAY[${Prisma.join(
+        ? Prisma.sql`AND oc.name = ANY(${Prisma.sql`ARRAY[${Prisma.join(
             outcomeList
-          )}]`}::"CallOutcome"[])`
+          )}]`}::text[])`
         : Prisma.empty
     }
-
-    ORDER BY l."updatedAt" DESC
-    LIMIT ${limit}
-    OFFSET ${offset}
   `
-  );
-
-  const countResult = await prisma.$queryRaw(
-    Prisma.sql`
-      SELECT COUNT(*)::int AS count
-      FROM "Lead" l
-      LEFT JOIN LATERAL (
-        SELECT la."callOutcome"
-        FROM "LeadActivity" la
-        WHERE la."leadId" = l.id
-          AND la.type = 'CALL'
-        ORDER BY la."createdAt" DESC
-        LIMIT 1
-      ) last_call ON TRUE
-      WHERE l."teamId" = ${teamId}
-
-      ${
-        statusList.length
-          ? Prisma.sql`AND l.status IN (${enumArray(statusList, "LeadStatus")})`
-          : Prisma.empty
-      }
-
-      ${
-        employeeList.length
-          ? Prisma.sql`AND l."assignedToId" IN (${Prisma.join(employeeList)})`
-          : Prisma.empty
-      }
-
-      ${
-        outcomeList.length
-          ? Prisma.sql`
-              AND last_call."callOutcome" IN (${enumArray(
-                outcomeList,
-                "CallOutcome"
-              )})
-            `
-          : Prisma.empty
-      }
-    `
   );
 
   return {
@@ -154,23 +267,64 @@ export const getLeadById = (leadId) => {
     include: {
       activities: {
         orderBy: { createdAt: "desc" },
-        include: { user: { select: { name: true } } },
+        include: {
+          user: { select: { name: true } },
+
+          // ✅ INCLUDE OUTCOME
+          outcome: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+
+          // ✅ INCLUDE REASON
+          outcomeReason: {
+            select: {
+              id: true,
+              label: true,
+            },
+          },
+        },
       },
     },
   });
 };
 
+const AUTO_STATUS_BY_OUTCOME = {
+  INTERESTED: "IN_PROGRESS",
+  CALL_LATER: "FOLLOW_UP",
+  CALL_BACK_SCHEDULED: "FOLLOW_UP",
+  NOT_INTERESTED: "LOST",
+  WRONG_NUMBER: "LOST",
+};
+
 export const logCall = async ({
   userId,
   leadId,
-  callOutcome,
+  outcomeId,
+  outcomeReasonId,
   remark,
   followUpAt,
 }) => {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!outcomeId) {
+    throw new Error("Call outcome is required");
+  }
+
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+  });
+
   if (!lead) throw new Error("Lead not found");
 
-  const newStatus = AUTO_STATUS_BY_OUTCOME[callOutcome] || lead.status;
+  const outcome = await prisma.callOutcomeConfig.findUnique({
+    where: { id: outcomeId },
+    select: { name: true },
+  });
+
+  if (!outcome) throw new Error("Invalid outcome");
+
+  const newStatus = AUTO_STATUS_BY_OUTCOME[outcome.name] ?? lead.status;
 
   await prisma.$transaction([
     prisma.lead.update({
@@ -180,40 +334,22 @@ export const logCall = async ({
         followUpAt: followUpAt ? new Date(followUpAt) : lead.followUpAt,
       },
     }),
+
     prisma.leadActivity.create({
       data: {
         leadId,
         userId,
         type: "CALL",
-        callOutcome,
-        remark,
+        outcomeId,
+        outcomeReasonId: outcomeReasonId || null,
+        remark: remark || null,
         oldStatus: lead.status,
         newStatus,
       },
     }),
   ]);
 
-  // 🔔 REAL-TIME EVENTS (CORRECT PLACE)
-
-  emitCallLogged({
-    leadId: lead.id,
-    userId,
-  });
-
-  if (followUpAt) {
-    notifyFollowUp({
-      type: "FOLLOW_UP_CREATED",
-      leadId: lead.id,
-      followUpAt,
-    });
-
-    emitFollowUpUpdate({
-      leadId: lead.id,
-      followUpAt,
-    });
-  }
-
-  return { message: "Call logged & status updated" };
+  return { message: "Call logged successfully" };
 };
 
 export const changeStatus = async (userId, leadId, status, remark) => {
@@ -246,16 +382,18 @@ export const getKanban = (teamId) => {
   });
 };
 
-export const getLeaderboard = (teamId, fromDate) => {
-  return prisma.leadActivity.groupBy({
-    by: ["userId", "callOutcome"],
-    where: {
-      lead: { teamId },
-      createdAt: { gte: fromDate },
-      type: "CALL",
-    },
-    _count: { id: true },
-  });
+export const getLeaderboard = async (req, res, next) => {
+  try {
+    const { range } = req.params;
+
+    const fromDate = getLeaderboardDate(range);
+
+    const data = await getTeamLeaderboard(req.user.teamId, fromDate);
+
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
 };
 
 export const reassignLeadsService = async ({
@@ -342,14 +480,14 @@ export const getLeadGroups = async (teamId) => {
    * 1️⃣ Get latest CALL activity per lead
    */
   const latestCalls = await prisma.$queryRaw`
-    SELECT DISTINCT ON ("leadId")
-      "leadId",
-      "callOutcome",
-      "createdAt"
-    FROM "LeadActivity"
-    WHERE "type" = 'CALL'
-    ORDER BY "leadId", "createdAt" DESC
-  `;
+  SELECT DISTINCT ON ("leadId")
+    "leadId",
+    "outcomeId",
+    "createdAt"
+  FROM "LeadActivity"
+  WHERE "type" = 'CALL'
+  ORDER BY "leadId", "createdAt" DESC
+`;
 
   /**
    * 2️⃣ Build lookup: leadId -> callOutcome

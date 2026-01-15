@@ -8,9 +8,9 @@ datasource db {
 }
 
 /**
- * ============================
+ * ======================================================
  * ENUMS
- * ============================
+ * ======================================================
  */
 
 enum Role {
@@ -20,7 +20,7 @@ enum Role {
 }
 
 /**
- * 🔵 HIGH-LEVEL PIPELINE STATUS (KANBAN)
+ * High-level CRM status (REAL lead state)
  */
 enum LeadStatus {
   FRESH
@@ -32,7 +32,7 @@ enum LeadStatus {
 }
 
 /**
- * 🔵 ACTIVITY TYPE
+ * Activity type
  */
 enum LeadActivityType {
   CALL
@@ -42,7 +42,7 @@ enum LeadActivityType {
 }
 
 /**
- * 🔵 CALL RESULT (EMPLOYEE SELECTS THIS)
+ * System call outcomes (unchangeable)
  */
 enum CallOutcome {
   NOT_PICKED_UP
@@ -56,9 +56,9 @@ enum CallOutcome {
 }
 
 /**
- * ============================
- * USER
- * ============================
+ * ======================================================
+ * USER / TEAM
+ * ======================================================
  */
 
 model User {
@@ -70,61 +70,52 @@ model User {
 
   isActive Boolean @default(true)
 
-  // 🔐 AUTH SECURITY
   failedLoginCount Int       @default(0)
   lockUntil        DateTime?
 
-  // 🔑 TEAM MEMBERSHIP
   teamId String?
   team   Team?   @relation("TeamMembers", fields: [teamId], references: [id])
 
-  // 🔑 TEAM MANAGER (1–1)
   managedTeam Team? @relation("TeamManager")
 
-  // 🔑 LEADS ASSIGNED TO EMPLOYEE
-  assignedLeads Lead[] @relation("UserAssignedLeads")
-
-  // 🔑 ACTIVITIES DONE BY USER
+  assignedLeads  Lead[]         @relation("UserAssignedLeads")
   leadActivities LeadActivity[] @relation("UserLeadActivities")
 
   attendance Attendance[]
 
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
   auditLogs     AuditLog[]
   forms         Form[]
   formResponses FormResponse[]
-}
 
-/**
- * ============================
- * TEAM
- * ============================
- */
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
 
 model Team {
   id   String @id @default(uuid())
   name String
 
-  // 🔗 ONE MANAGER → ONE TEAM
   managerId String @unique
   manager   User   @relation("TeamManager", fields: [managerId], references: [id])
 
-  // 🔗 TEAM MEMBERS
   users User[] @relation("TeamMembers")
-
-  // 🔗 TEAM LEADS
   leads Lead[]
+
+  /**
+   * 🔥 Pipeline configuration
+   */
+  callOutcomeConfigs CallOutcomeConfig[]
+
+  forms Form[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  forms     Form[]
 }
 
 /**
- * ============================
+ * ======================================================
  * ATTENDANCE
- * ============================
+ * ======================================================
  */
 
 model Attendance {
@@ -142,52 +133,102 @@ model Attendance {
 }
 
 /**
- * ============================
+ * ======================================================
+ * PIPELINE CONFIG (MANAGER-ONLY, DOES NOT CHANGE LEAD STATUS)
+ * ======================================================
+ */
+
+/**
+ * This represents stages like:
+ * NOT_PICKED_UP, BUSY, INTERESTED, etc
+ */
+model CallOutcomeConfig {
+  id     String @id @default(uuid())
+  teamId String
+
+  /**
+   * e.g. NOT_PICKED_UP, INTERESTED, WON, LOST
+   */
+  name String
+
+  /**
+   * Which stage this belongs to
+   */
+  stage PipelineStage
+
+  isSystem Boolean             @default(false)
+  reasons  CallOutcomeReason[]
+
+  team Team @relation(fields: [teamId], references: [id])
+
+  createdAt      DateTime       @default(now())
+  leadActivities LeadActivity[]
+
+  @@unique([teamId, name])
+}
+
+enum PipelineStage {
+  ACTIVE
+  CLOSED
+}
+
+/**
+ * Reasons INSIDE an outcome
+ * Example:
+ * Outcome = NOT_INTERESTED
+ * Reasons = ["Too expensive", "Not required"]
+ */
+model CallOutcomeReason {
+  id        String   @id @default(uuid())
+  outcomeId String
+  label     String
+  createdAt DateTime @default(now())
+
+  outcome        CallOutcomeConfig @relation(fields: [outcomeId], references: [id])
+  leadActivities LeadActivity[]
+}
+
+/**
+ * ======================================================
  * LEAD
- * ============================
+ * ======================================================
  */
 
 model Lead {
   id String @id @default(uuid())
 
-  // 🔹 FROM EXCEL
   companyName String
   personName  String
   phone       String
 
-  // 🔵 CURRENT PIPELINE STATUS
   status LeadStatus @default(FRESH)
 
-  // 🔔 FOLLOW-UP DATE (FOR CALL_LATER)
   followUpAt DateTime?
 
-  // 🔑 ASSIGNED EMPLOYEE
   assignedToId String?
   assignedTo   User?   @relation("UserAssignedLeads", fields: [assignedToId], references: [id])
 
-  // 🔑 TEAM
   teamId String
   team   Team   @relation(fields: [teamId], references: [id])
 
-  // 🔥 EXTRA DATA FROM EXCEL
   meta Json?
 
-  activities LeadActivity[]
-
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  activities    LeadActivity[]
   formResponses FormResponse[]
 
-  @@index([assignedToId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([teamId])
-  @@index([phone])
+  @@index([assignedToId])
   @@index([status])
+  @@index([phone])
 }
 
 /**
- * ============================
- * LEAD ACTIVITY (CALLS / HISTORY / ANALYTICS)
- * ============================
+ * ======================================================
+ * LEAD ACTIVITY (CALL LOGGING)
+ * ======================================================
  */
 
 model LeadActivity {
@@ -198,12 +239,15 @@ model LeadActivity {
 
   type LeadActivityType
 
-  // 🔵 STATUS CHANGE
   oldStatus LeadStatus?
   newStatus LeadStatus?
 
-  // 🔵 CALL RESULT (EMPLOYEE SELECTS)
-  callOutcome CallOutcome?
+  // ✅ REPLACED enum
+  outcomeId String?
+  outcome   CallOutcomeConfig? @relation(fields: [outcomeId], references: [id])
+
+  outcomeReasonId String?
+  outcomeReason   CallOutcomeReason? @relation(fields: [outcomeReasonId], references: [id])
 
   remark String?
 
@@ -212,10 +256,16 @@ model LeadActivity {
   lead Lead @relation(fields: [leadId], references: [id])
   user User @relation("UserLeadActivities", fields: [userId], references: [id])
 
-  @@index([userId])
   @@index([leadId])
-  @@index([createdAt])
+  @@index([userId])
+  @@index([outcomeId])
 }
+
+/**
+ * ======================================================
+ * AUDIT / FORMS / SETTINGS / INTEGRATIONS
+ * ======================================================
+ */
 
 model AuditLog {
   id String @id @default(uuid())
@@ -234,7 +284,6 @@ model AuditLog {
   @@index([action])
   @@index([entity])
   @@index([userId])
-  @@index([createdAt])
 }
 
 model Form {
@@ -246,7 +295,7 @@ model Form {
   teamId String
   team   Team   @relation(fields: [teamId], references: [id])
 
-  schema Json // form structure (fields)
+  schema Json
 
   isActive Boolean @default(true)
 
@@ -257,38 +306,31 @@ model Form {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  @@index([teamId])
 }
 
 model FormResponse {
   id String @id @default(uuid())
 
   formId String
-  form   Form   @relation(fields: [formId], references: [id])
-
   leadId String
-  lead   Lead   @relation(fields: [leadId], references: [id])
-
   userId String
-  user   User   @relation(fields: [userId], references: [id])
 
-  values Json // user-filled values
+  schemaSnapshot Json
+  values         Json
 
   createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  lead      Lead     @relation(fields: [leadId], references: [id])
+  form      Form     @relation(fields: [formId], references: [id])
 
-  @@index([formId])
-  @@index([leadId])
-  @@index([userId])
+  @@unique([formId, leadId, userId])
 }
-
-///////////==============================================================
 
 model Setting {
   id String @id @default(uuid())
 
   scope  SettingScope
-  teamId String? // null = system-wide
+  teamId String?
 
   key   String
   value Json
@@ -297,15 +339,12 @@ model Setting {
   updatedAt DateTime @updatedAt
 
   @@unique([scope, teamId, key])
-  @@index([teamId])
 }
 
 enum SettingScope {
   SYSTEM
   TEAM
 }
-
-// ============================================================================
 
 model Integration {
   id String @id @default(uuid())
@@ -314,7 +353,7 @@ model Integration {
   teamId   String
   isActive Boolean             @default(true)
 
-  config Json // API keys, tokens, settings
+  config Json
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

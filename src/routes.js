@@ -12,6 +12,8 @@ import notificationRoutes from "./modules/notifications/notification.routes.js";
 import auditRoutes from "./modules/audit/audit.routes.js";
 import integrationRoutes from "./modules/integrations/integration.routes.js";
 import settingRoutes from "./modules/settings/setting.routes.js";
+import pipelineRoutes from "./modules/pipeline/pipeline.routes.js";
+import leaderboardRoutes from "./modules/leaderboard/leaderboard.routes.js";
 
 const router = express.Router();
 
@@ -37,11 +39,13 @@ router.use("/leads", leadRoutes);
  */
 router.use("/forms", formRoutes);
 router.use("/reports", reportRoutes);
+router.use("/pipeline", pipelineRoutes);
 router.use("/dashboard", dashboardRoutes);
 
 /**
  * SYSTEM & REAL-TIME
  */
+router.use("/leaderboard", leaderboardRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/audit", auditRoutes);
 

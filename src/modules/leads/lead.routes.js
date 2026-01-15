@@ -21,6 +21,7 @@ import {
   getLeadGroups,
   getPerformance,
   getLeads,
+  completeLead,
 } from "./lead.controller.js";
 
 const router = express.Router();
@@ -56,6 +57,13 @@ router.get(
   authMiddleware,
   roleMiddleware("EMPLOYEE", "MANAGER"),
   getTodayFollowUps
+);
+
+router.post(
+  "/:id/complete",
+  authMiddleware,
+  roleMiddleware("EMPLOYEE"),
+  completeLead
 );
 
 router.get(

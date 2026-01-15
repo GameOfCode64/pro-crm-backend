@@ -18,6 +18,16 @@ export const getPerformanceOverview = async (req, res, next) => {
   }
 };
 
+export const getManagerDashboard = async (req, res, next) => {
+  try {
+    const { range = "today" } = req.query;
+    const data = await service.getManagerDashboardService(req.user, range);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const getFollowUpAlerts = async (req, res, next) => {
   try {
     const data = await service.getFollowUpAlerts(req.user);

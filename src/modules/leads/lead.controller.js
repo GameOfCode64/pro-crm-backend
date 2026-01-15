@@ -32,6 +32,20 @@ export const getLeads = async (req, res, next) => {
   }
 };
 
+export const completeLead = async (req, res, next) => {
+  try {
+    const result = await service.completeLeadService({
+      userId: req.user.id,
+      leadId: req.params.id,
+      ...req.body,
+    });
+
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const getLeadById = async (req, res, next) => {
   try {
     const lead = await service.getLeadById(req.params.id);
@@ -43,13 +57,21 @@ export const getLeadById = async (req, res, next) => {
 
 export const logCall = async (req, res, next) => {
   try {
-    const { callOutcome, remark, followUpAt } = req.body;
+    const { outcomeId, outcomeReasonId, remark, followUpAt } = req.body;
+
+    // ✅ HARD VALIDATION (THIS FIXES YOUR ERROR)
+    if (!outcomeId) {
+      return res.status(400).json({
+        message: "Call outcome is required",
+      });
+    }
 
     const result = await service.logCall({
       userId: req.user.id,
       leadId: req.params.id,
-      callOutcome,
-      remark,
+      outcomeId,
+      outcomeReasonId: outcomeReasonId ?? null,
+      remark: remark ?? null,
       followUpAt,
     });
 
@@ -111,7 +133,7 @@ export const reassignLeads = async (req, res, next) => {
   try {
     const { leadIds, employeeIds } = req.body;
 
-    const count = await reassignLeadsService({
+    const count = await service.reassignLeadsService({
       manager: req.user,
       leadIds,
       employeeIds,

@@ -1,24 +1,34 @@
 export const getLeaderboardDate = (range) => {
   const now = new Date();
 
-  if (range === "daily") {
-    now.setHours(0, 0, 0, 0);
-    return now;
-  }
+  switch (range) {
+    case "today":
+      now.setHours(0, 0, 0, 0);
+      return now;
 
-  if (range === "weekly") {
-    const day = now.getDay();
-    now.setDate(now.getDate() - day);
-    now.setHours(0, 0, 0, 0);
-    return now;
-  }
+    case "week": {
+      const d = new Date();
+      d.setDate(d.getDate() - 7);
+      return d;
+    }
 
-  if (range === "monthly") {
-    return new Date(now.getFullYear(), now.getMonth(), 1);
-  }
+    case "month": {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      return d;
+    }
 
-  throw new Error("Invalid leaderboard range");
+    case "year": {
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - 1);
+      return d;
+    }
+
+    default:
+      throw new Error("Invalid leaderboard range");
+  }
 };
+
 /**
  * Apply levels & badges based on performance score
  * Pure function → safe, testable, reusable

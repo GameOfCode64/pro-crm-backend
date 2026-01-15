@@ -1,31 +1,72 @@
-import * as service from "./report.service.js";
-import { parseDateRange } from "./report.validation.js";
+import {
+  buildAttendanceWorkbook,
+  buildLeadsWorkbook,
+} from "./reports.excel.js";
 
-export const leadReport = async (req, res, next) => {
+import { getAttendanceData, getLeadsExportData } from "./report.service.js";
+
+export const exportAttendance = async (req, res, next) => {
   try {
-    const dateRange = parseDateRange(req.query);
-    const data = await service.leadReport(req.user.teamId, dateRange);
-    res.json(data);
-  } catch (e) {
-    next(e);
+    const { from, to, employeeIds = [] } = req.body;
+
+    if (!from || !to) {
+      throw new Error("From and To dates are required");
+    }
+
+    const data = await getAttendanceData({
+      manager: req.user,
+      from,
+      to,
+      employeeIds,
+    });
+
+    const workbook = await buildAttendanceWorkbook(data, { from, to });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=attendance_${from}_to_${to}.xlsx`
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    next(err);
   }
 };
 
-export const employeeReport = async (req, res, next) => {
+export const exportLeads = async (req, res, next) => {
   try {
-    const dateRange = parseDateRange(req.query);
-    const data = await service.employeeReport(req.user.teamId, dateRange);
-    res.json(data);
-  } catch (e) {
-    next(e);
-  }
-};
+    const { from, to, outcomeNames = [] } = req.body;
 
-export const followUpReport = async (req, res, next) => {
-  try {
-    const data = await service.followUpReport(req.user.teamId);
-    res.json(data);
-  } catch (e) {
-    next(e);
+    if (!from || !to) {
+      throw new Error("From and To dates are required");
+    }
+
+    const rows = await getLeadsExportData({
+      manager: req.user,
+      from,
+      to,
+      outcomeNames,
+    });
+
+    const workbook = await buildLeadsWorkbook(rows);
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=leads_${from}_to_${to}.xlsx`
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    next(err);
   }
 };

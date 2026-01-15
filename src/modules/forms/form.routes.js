@@ -1,38 +1,23 @@
 import express from "express";
-import authMiddleware from "../../middlewares/auth.middleware.js";
-import roleMiddleware from "../../middlewares/role.middleware.js";
+import auth from "../../middlewares/auth.middleware.js";
+import role from "../../middlewares/role.middleware.js";
 import {
   createForm,
-  getForms,
-  getFormById,
-  submitForm,
-  getLeadForms,
+  getActiveForm,
+  getFormResponse,
+  submitFormResponse,
 } from "./form.controller.js";
 
 const router = express.Router();
 
-/**
- * MANAGER
- */
-router.post("/", authMiddleware, roleMiddleware("MANAGER"), createForm);
+// MANAGER
+router.post("/", auth, role("MANAGER"), createForm);
 
-router.get("/", authMiddleware, roleMiddleware("MANAGER"), getForms);
+// MANAGER + EMPLOYEE
+router.get("/active", auth, getActiveForm);
 
-/**
- * EMPLOYEE
- */
-router.get(
-  "/lead/:leadId",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE", "MANAGER"),
-  getLeadForms
-);
-
-router.post(
-  "/:formId/submit/:leadId",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE"),
-  submitForm
-);
+// EMPLOYEE
+router.get("/response/:leadId", auth, role("EMPLOYEE"), getFormResponse);
+router.post("/submit", auth, role("EMPLOYEE"), submitFormResponse);
 
 export default router;

@@ -5,6 +5,7 @@ import {
   getDashboardSummary,
   getPerformanceOverview,
   getFollowUpAlerts,
+  getManagerDashboard,
 } from "./dashboard.controller.js";
 
 const router = express.Router();
@@ -17,6 +18,13 @@ router.get(
   authMiddleware,
   roleMiddleware("MANAGER"),
   getDashboardSummary
+);
+
+router.get(
+  "/manager",
+  authMiddleware,
+  roleMiddleware("MANAGER"),
+  getManagerDashboard
 );
 
 router.get(
