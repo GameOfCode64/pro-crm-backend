@@ -71,7 +71,7 @@ export const login = async ({ email, password }) => {
 };
 
 export const createUser = async (creator, payload) => {
-  const { name, email, password, role, teamId } = payload;
+  const { name, email, password, role } = payload;
 
   // 🔒 Role enforcement
   if (creator.role === ROLES.MANAGER && role !== ROLES.EMPLOYEE) {
@@ -93,7 +93,15 @@ export const createUser = async (creator, payload) => {
       email,
       password: hashedPassword,
       role,
-      teamId: creator.role === ROLES.MANAGER ? creator.teamId : teamId,
+
+      // ✅ FIX: use relation instead of teamId
+      team:
+        creator.role === ROLES.MANAGER
+          ? { connect: { id: creator.teamId } }
+          : teamId
+          ? { connect: { id: teamId } }
+          : undefined,
+
       managerId: creator.role === ROLES.MANAGER ? creator.id : null,
     },
     select: {
