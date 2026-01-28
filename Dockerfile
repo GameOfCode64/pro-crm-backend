@@ -6,11 +6,13 @@ WORKDIR /app
 # ---------- Dependencies ----------
 FROM base AS deps
 COPY package.json package-lock.json ./
+COPY prisma ./prisma/
 RUN npm ci
 
 # ---------- Build ----------
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/prisma ./prisma
 COPY . .
 RUN npx prisma generate
 
