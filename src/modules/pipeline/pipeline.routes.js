@@ -5,7 +5,7 @@ import {
   getPipeline,
   createOutcome,
   updateOutcome,
-  deleteOutcomeReason,
+  deleteOutcome,
 } from "./pipeline.controller.js";
 
 const router = express.Router();
@@ -13,6 +13,6 @@ const router = express.Router();
 router.get("/", auth, role("MANAGER", "EMPLOYEE"), getPipeline);
 router.post("/outcomes", auth, role("MANAGER"), createOutcome);
 router.put("/outcomes/:id", auth, role("MANAGER"), updateOutcome);
-router.delete("/reasons/:id", auth, role("MANAGER"), deleteOutcomeReason);
+router.delete("/reasons/:id", auth, role("MANAGER"), deleteOutcome);
 
 export default router;

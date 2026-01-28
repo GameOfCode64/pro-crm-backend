@@ -1,13 +1,11 @@
 import prisma from "../../config/db.js";
 import { Prisma } from "@prisma/client";
-import { notifyFollowUp } from "./lead.sse.js";
-import {
-  emitCallLogged,
-  emitFollowUpUpdate,
-  emitLeadReassigned,
-} from "../dashboard/dashboard.realtime.js";
-import { getLeaderboardDate } from "./lead.validation.js";
-import { getTeamLeaderboard } from "../leaderboard/leaderboard.service.js";
+
+/**
+ * ======================================================
+ * CONSTANTS
+ * ======================================================
+ */
 
 const OUTCOME_TO_STATUS = {
   INTERESTED: "IN_PROGRESS",
@@ -17,6 +15,62 @@ const OUTCOME_TO_STATUS = {
   WRONG_NUMBER: "LOST",
 };
 
+const CALL_GROUPS = {
+  NOT_PICKED_UP_GROUP: ["NOT_PICKED_UP", "BUSY", "SWITCHED_OFF"],
+  FOLLOW_UP_GROUP: ["CALL_LATER", "CALL_BACK_SCHEDULED"],
+  INTERESTED_GROUP: ["INTERESTED"],
+  DEAD_GROUP: ["NOT_INTERESTED", "WRONG_NUMBER"],
+};
+
+/**
+ * ======================================================
+ * EMPLOYEE
+ * ======================================================
+ */
+
+export const getMyLeads = async (userId) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return prisma.$queryRaw`
+    SELECT
+      l.*,
+      EXISTS (
+        SELECT 1
+        FROM "LeadActivity" la
+        WHERE la."leadId" = l.id
+          AND la.type = 'CALL'
+          AND la."createdAt" >= ${today}
+      ) AS "calledToday"
+    FROM "Lead" l
+    WHERE l."assignedToId" = ${userId}
+    ORDER BY l."updatedAt" DESC
+  `;
+};
+
+export const getLeadById = async (leadId) => {
+  return prisma.lead.findUnique({
+    where: { id: leadId },
+    include: {
+      activities: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          user: { select: { name: true } },
+          outcome: { select: { id: true, name: true } },
+          outcomeReason: { select: { id: true, label: true } },
+        },
+      },
+      formResponses: true,
+    },
+  });
+};
+
+/**
+ * ======================================================
+ * CALL / COMPLETE
+ * ======================================================
+ */
+
 export const completeLeadService = async ({
   userId,
   leadId,
@@ -25,68 +79,62 @@ export const completeLeadService = async ({
   remark,
   formValues,
 }) => {
-  if (!outcomeId) {
-    throw new Error("Call outcome is required");
-  }
+  if (!outcomeId) throw new Error("Call outcome is required");
 
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
-  });
-
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) throw new Error("Lead not found");
 
   const outcome = await prisma.callOutcomeConfig.findUnique({
     where: { id: outcomeId },
     select: { name: true },
   });
-
   if (!outcome) throw new Error("Invalid outcome");
 
   const newStatus = OUTCOME_TO_STATUS[outcome.name] ?? lead.status;
 
   await prisma.$transaction(async (tx) => {
-    // 1️⃣ Save / update form response
     if (formValues) {
-      // Fetch the active form with its schema
       const activeForm = await tx.form.findFirst({
-        where: { isActive: true, teamId: lead.teamId },
+        where: { teamId: lead.teamId, isActive: true },
         select: { id: true, schema: true },
       });
 
-      if (!activeForm) {
-        throw new Error("No active form found for this team");
-      }
-
-      await tx.formResponse.upsert({
-        where: {
-          formId_leadId_userId: {
+      if (activeForm) {
+        // Find existing response first
+        const existingResponse = await tx.formResponse.findFirst({
+          where: {
             formId: activeForm.id,
             leadId,
             userId,
           },
-        },
-        update: {
-          values: formValues,
-        },
-        create: {
-          formId: activeForm.id,
-          leadId,
-          userId,
-          values: formValues,
-          schemaSnapshot: activeForm.schema, // Add this field
-        },
-      });
+        });
+
+        if (existingResponse) {
+          // Update existing response
+          await tx.formResponse.update({
+            where: { id: existingResponse.id },
+            data: { values: formValues },
+          });
+        } else {
+          // Create new response
+          await tx.formResponse.create({
+            data: {
+              formId: activeForm.id,
+              leadId,
+              userId,
+              values: formValues,
+              schemaSnapshot: activeForm.schema,
+            },
+          });
+        }
+      }
     }
 
-    // 2️⃣ Update lead
     await tx.lead.update({
       where: { id: leadId },
-      data: {
-        status: newStatus,
-      },
+      data: { status: newStatus },
     });
 
-    // 3️⃣ Create call activity
     await tx.leadActivity.create({
       data: {
         leadId,
@@ -103,202 +151,6 @@ export const completeLeadService = async ({
 
   return { message: "Lead completed successfully" };
 };
-
-const enumArray = (values, enumName) =>
-  Prisma.join(values.map((v) => Prisma.sql`${v}::"${Prisma.raw(enumName)}"`));
-
-export const getMyLeads = async (userId) => {
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-
-  return prisma.$queryRaw`
-    SELECT
-      l.*,
-      EXISTS (
-        SELECT 1
-        FROM "LeadActivity" la
-        WHERE la."leadId" = l.id
-          AND la.type = 'CALL'
-          AND la."createdAt" >= ${todayStart}
-      ) AS "calledToday"
-    FROM "Lead" l
-    WHERE l."assignedToId" = ${userId}
-    ORDER BY l."updatedAt" DESC
-  `;
-};
-
-export const getFilteredLeads = async ({
-  manager,
-  statuses,
-  outcomes,
-  employeeIds,
-  page = 1,
-  limit = 50,
-}) => {
-  const dbManager = await prisma.user.findUnique({
-    where: { id: manager.id },
-    select: { teamId: true },
-  });
-
-  if (!dbManager?.teamId) {
-    throw new Error("Manager has no team");
-  }
-
-  const teamId = dbManager.teamId;
-
-  const statusList = statuses ? statuses.split(",") : [];
-  const outcomeList = outcomes ? outcomes.split(",") : [];
-  const employeeList = employeeIds ? employeeIds.split(",") : [];
-
-  const offset = (page - 1) * limit;
-
-  const leads = await prisma.$queryRaw`
-  SELECT
-    l.*,
-    u.id   AS "assignedToId",
-    u.name AS "assignedToName",
-    oc.name AS "lastOutcome"
-  FROM "Lead" l
-
-  LEFT JOIN "User" u
-    ON u.id = l."assignedToId"
-
-  -- 🔥 latest CALL activity
-  LEFT JOIN LATERAL (
-    SELECT la."outcomeId"
-    FROM "LeadActivity" la
-    WHERE la."leadId" = l.id
-      AND la.type = 'CALL'
-    ORDER BY la."createdAt" DESC
-    LIMIT 1
-  ) last_call ON TRUE
-
-  -- 🔥 join outcome config
-  LEFT JOIN "CallOutcomeConfig" oc
-    ON oc.id = last_call."outcomeId"
-
-  WHERE l."teamId" = ${teamId}
-
-  ${
-    statusList.length
-      ? Prisma.sql`AND l.status = ANY(${Prisma.sql`ARRAY[${Prisma.join(
-          statusList
-        )}]`}::"LeadStatus"[])`
-      : Prisma.empty
-  }
-
-  ${
-    employeeList.length
-      ? Prisma.sql`AND l."assignedToId" = ANY(${Prisma.sql`ARRAY[${Prisma.join(
-          employeeList
-        )}]`}::uuid[])`
-      : Prisma.empty
-  }
-
-  ${
-    outcomeList.length
-      ? Prisma.sql`AND oc.name = ANY(${Prisma.sql`ARRAY[${Prisma.join(
-          outcomeList
-        )}]`}::text[])`
-      : Prisma.empty
-  }
-
-  ORDER BY l."updatedAt" DESC
-  LIMIT ${limit}
-  OFFSET ${offset}
-`;
-
-  const countResult = await prisma.$queryRaw(
-    Prisma.sql`
-    SELECT COUNT(*)::int AS count
-    FROM "Lead" l
-
-    LEFT JOIN LATERAL (
-      SELECT la."outcomeId"
-      FROM "LeadActivity" la
-      WHERE la."leadId" = l.id
-        AND la.type = 'CALL'
-      ORDER BY la."createdAt" DESC
-      LIMIT 1
-    ) last_call ON TRUE
-
-    LEFT JOIN "CallOutcomeConfig" oc
-      ON oc.id = last_call."outcomeId"
-
-    WHERE l."teamId" = ${teamId}
-
-    ${
-      statusList.length
-        ? Prisma.sql`AND l.status = ANY(${Prisma.sql`ARRAY[${Prisma.join(
-            statusList
-          )}]`}::"LeadStatus"[])`
-        : Prisma.empty
-    }
-
-    ${
-      employeeList.length
-        ? Prisma.sql`AND l."assignedToId" = ANY(${Prisma.sql`ARRAY[${Prisma.join(
-            employeeList
-          )}]`}::uuid[])`
-        : Prisma.empty
-    }
-
-    ${
-      outcomeList.length
-        ? Prisma.sql`AND oc.name = ANY(${Prisma.sql`ARRAY[${Prisma.join(
-            outcomeList
-          )}]`}::text[])`
-        : Prisma.empty
-    }
-  `
-  );
-
-  return {
-    data: leads,
-    page,
-    limit,
-    total: countResult[0].count,
-  };
-};
-
-export const getLeadById = (leadId) => {
-  return prisma.lead.findUnique({
-    where: { id: leadId },
-    include: {
-      activities: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          user: { select: { name: true } },
-
-          // ✅ INCLUDE OUTCOME
-          outcome: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-
-          // ✅ INCLUDE REASON
-          outcomeReason: {
-            select: {
-              id: true,
-              label: true,
-            },
-          },
-        },
-      },
-    },
-  });
-};
-
-const AUTO_STATUS_BY_OUTCOME = {
-  INTERESTED: "IN_PROGRESS",
-  CALL_LATER: "FOLLOW_UP",
-  CALL_BACK_SCHEDULED: "FOLLOW_UP",
-  NOT_INTERESTED: "LOST",
-  WRONG_NUMBER: "LOST",
-};
-
 export const logCall = async ({
   userId,
   leadId,
@@ -307,24 +159,18 @@ export const logCall = async ({
   remark,
   followUpAt,
 }) => {
-  if (!outcomeId) {
-    throw new Error("Call outcome is required");
-  }
+  if (!outcomeId) throw new Error("Call outcome is required");
 
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
-  });
-
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) throw new Error("Lead not found");
 
   const outcome = await prisma.callOutcomeConfig.findUnique({
     where: { id: outcomeId },
     select: { name: true },
   });
-
   if (!outcome) throw new Error("Invalid outcome");
 
-  const newStatus = AUTO_STATUS_BY_OUTCOME[outcome.name] ?? lead.status;
+  const newStatus = OUTCOME_TO_STATUS[outcome.name] ?? lead.status;
 
   await prisma.$transaction([
     prisma.lead.update({
@@ -334,15 +180,14 @@ export const logCall = async ({
         followUpAt: followUpAt ? new Date(followUpAt) : lead.followUpAt,
       },
     }),
-
     prisma.leadActivity.create({
       data: {
         leadId,
         userId,
         type: "CALL",
         outcomeId,
-        outcomeReasonId: outcomeReasonId || null,
-        remark: remark || null,
+        outcomeReasonId: outcomeReasonId ?? null,
+        remark: remark ?? null,
         oldStatus: lead.status,
         newStatus,
       },
@@ -375,226 +220,205 @@ export const changeStatus = async (userId, leadId, status, remark) => {
   return { message: "Status changed" };
 };
 
-export const getKanban = (teamId) => {
-  return prisma.lead.findMany({
-    where: { teamId },
-    orderBy: { updatedAt: "desc" },
-  });
+/**
+ * ======================================================
+ * MANAGER – FILTERED LEADS (ASSIGN PAGE)
+ * ======================================================
+ */
+
+// Fixed service with proper UUID casting for employeeIds
+
+export const getFilteredLeads = async ({
+  manager,
+  statuses,
+  outcomes,
+  employeeIds,
+  page = 1,
+  limit = 50,
+}) => {
+  const offset = (page - 1) * limit;
+
+  const statusList = statuses ? statuses.split(",") : [];
+  const outcomeList = outcomes ? outcomes.split(",") : [];
+  const employeeList = employeeIds ? employeeIds.split(",") : [];
+
+  const leads = await prisma.$queryRaw`
+    SELECT
+      l.*,
+      u.name AS "assignedToName",
+      oc.name AS "lastOutcome"
+    FROM "Lead" l
+
+    LEFT JOIN "User" u ON u.id = l."assignedToId"
+
+    LEFT JOIN LATERAL (
+      SELECT la."outcomeId"
+      FROM "LeadActivity" la
+      WHERE la."leadId" = l.id AND la.type = 'CALL'
+      ORDER BY la."createdAt" DESC
+      LIMIT 1
+    ) last_call ON TRUE
+
+    LEFT JOIN "CallOutcomeConfig" oc
+      ON oc.id = last_call."outcomeId"
+
+    WHERE l."teamId" = ${manager.teamId}
+
+    ${
+      statusList.length
+        ? Prisma.sql`
+          AND l.status = ANY (
+            ARRAY[${Prisma.join(
+              statusList.map((s) => Prisma.sql`${s}::"LeadStatus"`),
+            )}]
+          )
+        `
+        : Prisma.empty
+    }
+
+    ${
+      employeeList.length
+        ? Prisma.sql`
+          AND l."assignedToId"::text = ANY (
+            ARRAY[${Prisma.join(employeeList.map((id) => Prisma.sql`${id}`))}]
+          )
+        `
+        : Prisma.empty
+    }
+
+    ${
+      outcomeList.length
+        ? Prisma.sql`
+          AND oc.name = ANY (
+            ARRAY[${Prisma.join(outcomeList.map((o) => Prisma.sql`${o}`))}]
+          )
+        `
+        : Prisma.empty
+    }
+
+    ORDER BY l."updatedAt" DESC
+    LIMIT ${limit}
+    OFFSET ${offset}
+  `;
+
+  const [{ count }] = await prisma.$queryRaw`
+    SELECT COUNT(*)::int AS count
+    FROM "Lead" l
+    WHERE l."teamId" = ${manager.teamId}
+  `;
+
+  return { data: leads, page, limit, total: count };
 };
-
-export const getLeaderboard = async (req, res, next) => {
-  try {
-    const { range } = req.params;
-
-    const fromDate = getLeaderboardDate(range);
-
-    const data = await getTeamLeaderboard(req.user.teamId, fromDate);
-
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
+/**
+ * ======================================================
+ * ASSIGN LEADS
+ * ======================================================
+ */
 
 export const reassignLeadsService = async ({
   manager,
   leadIds,
   employeeIds,
 }) => {
-  if (!leadIds?.length) {
-    throw new Error("No leads selected");
-  }
+  if (!leadIds?.length) throw new Error("No leads selected");
+  if (!employeeIds?.length) throw new Error("No employees selected");
 
-  if (!employeeIds?.length) {
-    throw new Error("No employees selected");
-  }
-
-  // ✅ Validate employees
   const employees = await prisma.user.findMany({
     where: {
       id: { in: employeeIds },
       role: "EMPLOYEE",
       isActive: true,
+      teamId: manager.teamId,
     },
     select: { id: true, name: true },
   });
 
-  if (employees.length !== employeeIds.length) {
-    throw new Error("Invalid employee selection");
-  }
-
-  // ✅ Validate leads
   const leads = await prisma.lead.findMany({
-    where: {
-      id: { in: leadIds },
-      teamId: manager.teamId,
-    },
+    where: { id: { in: leadIds }, teamId: manager.teamId },
   });
 
-  if (!leads.length) {
-    throw new Error("No valid leads found");
-  }
-
-  let index = 0;
-  const actions = [];
-
+  let i = 0;
   for (const lead of leads) {
-    const employee = employees[index % employees.length];
-    index++;
+    const emp = employees[i++ % employees.length];
 
-    actions.push(
-      prisma.$transaction([
-        prisma.lead.update({
-          where: { id: lead.id },
-          data: {
-            assignedToId: employee.id,
-            status: "ASSIGNED",
-          },
-        }),
-        prisma.leadActivity.create({
-          data: {
-            leadId: lead.id,
-            userId: manager.id,
-            type: "ASSIGNED",
-            remark: `Assigned to ${employee.name}`,
-          },
-        }),
-      ])
-    );
+    await prisma.$transaction([
+      prisma.lead.update({
+        where: { id: lead.id },
+        data: { assignedToId: emp.id, status: "ASSIGNED" },
+      }),
+      prisma.leadActivity.create({
+        data: {
+          leadId: lead.id,
+          userId: manager.id,
+          type: "ASSIGNED",
+          remark: `Assigned to ${emp.name}`,
+        },
+      }),
+    ]);
   }
-
-  await Promise.all(actions);
 
   return leads.length;
 };
 
-const CALL_GROUPS = {
-  NOT_PICKED_UP_GROUP: ["NOT_PICKED_UP", "BUSY", "SWITCHED_OFF"],
-  FOLLOW_UP_GROUP: ["CALL_LATER", "CALL_BACK_SCHEDULED"],
-  INTERESTED_GROUP: ["INTERESTED"],
-  DEAD_GROUP: ["NOT_INTERESTED", "WRONG_NUMBER"],
-};
+/**
+ * ======================================================
+ * MANAGER LEADERBOARD SERVICE
+ * ======================================================
+ */
 
-export const getLeadGroups = async (teamId) => {
-  /**
-   * 1️⃣ Get latest CALL activity per lead
-   */
-  const latestCalls = await prisma.$queryRaw`
-  SELECT DISTINCT ON ("leadId")
-    "leadId",
-    "outcomeId",
-    "createdAt"
-  FROM "LeadActivity"
-  WHERE "type" = 'CALL'
-  ORDER BY "leadId", "createdAt" DESC
-`;
-
-  /**
-   * 2️⃣ Build lookup: leadId -> callOutcome
-   */
-  const outcomeMap = {};
-  for (const row of latestCalls) {
-    outcomeMap[row.leadId] = row.callOutcome;
-  }
-
-  /**
-   * 3️⃣ Get all team leads
-   */
-  const leads = await prisma.lead.findMany({
-    where: { teamId },
-    include: {
-      assignedTo: { select: { id: true, name: true } },
-    },
+export const getLeaderboardService = async (teamId, fromDate) => {
+  const employees = await prisma.user.findMany({
+    where: { teamId, role: "EMPLOYEE", isActive: true },
+    select: { id: true, name: true, email: true },
   });
 
-  /**
-   * 4️⃣ Group leads
-   */
-  const groups = {
-    FRESH: [],
-    NOT_PICKED_UP_GROUP: [],
-    FOLLOW_UP_GROUP: [],
-    INTERESTED_GROUP: [],
-    DEAD_GROUP: [],
-  };
+  if (!employees.length) return [];
 
-  for (const lead of leads) {
-    const outcome = outcomeMap[lead.id];
+  const employeeIds = employees.map((e) => e.id);
 
-    if (!outcome) {
-      groups.FRESH.push(lead);
-      continue;
-    }
+  const calls = await prisma.$queryRaw`
+    SELECT DISTINCT ON ("leadId")
+      la."leadId",
+      la."userId",
+      oc.name AS "outcomeName"
+    FROM "LeadActivity" la
+    JOIN "CallOutcomeConfig" oc ON oc.id = la."outcomeId"
+    WHERE la.type = 'CALL'
+      AND la."userId" = ANY (
+        ARRAY[${Prisma.join(employeeIds.map((id) => Prisma.sql`${id}::text`))}]
+      )
+      AND la."createdAt" >= ${fromDate}
+    ORDER BY la."leadId", la."createdAt" DESC
+  `;
 
-    let placed = false;
-
-    for (const [groupName, outcomes] of Object.entries(CALL_GROUPS)) {
-      if (outcomes.includes(outcome)) {
-        groups[groupName].push(lead);
-        placed = true;
-        break;
-      }
-    }
-
-    if (!placed) {
-      groups.FRESH.push(lead);
-    }
+  const board = {};
+  for (const e of employees) {
+    board[e.id] = {
+      employeeId: e.id,
+      name: e.name,
+      email: e.email,
+      totalCalls: 0,
+      uniqueLeads: 0,
+      interested: 0,
+      followUps: 0,
+      lost: 0,
+    };
   }
 
-  return groups;
-};
+  for (const c of calls) {
+    const row = board[c.userId];
+    if (!row) continue;
 
-const baseFollowUpWhere = (user) => {
-  if (user.role === "EMPLOYEE") {
-    return { assignedToId: user.id };
+    row.totalCalls++;
+    row.uniqueLeads++;
+
+    if (c.outcomeName === "INTERESTED") row.interested++;
+    if (["CALL_LATER", "CALL_BACK_SCHEDULED"].includes(c.outcomeName))
+      row.followUps++;
+    if (["NOT_INTERESTED", "WRONG_NUMBER"].includes(c.outcomeName)) row.lost++;
   }
-  if (user.role === "MANAGER") {
-    return { teamId: user.teamId };
-  }
-};
 
-export const getTodayFollowUps = async (user) => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date();
-  end.setHours(23, 59, 59, 999);
-
-  return prisma.lead.findMany({
-    where: {
-      ...baseFollowUpWhere(user),
-      followUpAt: {
-        gte: start,
-        lte: end,
-      },
-    },
-    orderBy: { followUpAt: "asc" },
-  });
-};
-
-export const getUpcomingFollowUps = async (user) => {
-  return prisma.lead.findMany({
-    where: {
-      ...baseFollowUpWhere(user),
-      followUpAt: {
-        gt: new Date(),
-      },
-    },
-    orderBy: { followUpAt: "asc" },
-  });
-};
-
-export const getOverdueFollowUps = async (user) => {
-  return prisma.lead.findMany({
-    where: {
-      ...baseFollowUpWhere(user),
-      followUpAt: {
-        lt: new Date(),
-      },
-      status: {
-        notIn: ["WON", "LOST"],
-      },
-    },
-    orderBy: { followUpAt: "asc" },
-  });
+  return Object.values(board)
+    .sort((a, b) => b.uniqueLeads - a.uniqueLeads)
+    .map((row, idx) => ({ rank: idx + 1, ...row }));
 };

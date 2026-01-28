@@ -20,7 +20,7 @@ enum Role {
 }
 
 /**
- * High-level CRM status (REAL lead state)
+ * REAL lead lifecycle status (ONE VALUE ONLY)
  */
 enum LeadStatus {
   FRESH
@@ -32,7 +32,7 @@ enum LeadStatus {
 }
 
 /**
- * Activity type
+ * Activity type (AUDITABLE EVENTS)
  */
 enum LeadActivityType {
   CALL
@@ -42,17 +42,11 @@ enum LeadActivityType {
 }
 
 /**
- * System call outcomes (unchangeable)
+ * Outcome stage (controls lead status updates)
  */
-enum CallOutcome {
-  NOT_PICKED_UP
-  BUSY
-  SWITCHED_OFF
-  CALL_LATER
-  CALL_BACK_SCHEDULED
-  INTERESTED
-  NOT_INTERESTED
-  WRONG_NUMBER
+enum PipelineStage {
+  ACTIVE
+  CLOSED
 }
 
 /**
@@ -102,7 +96,7 @@ model Team {
   leads Lead[]
 
   /**
-   * 🔥 Pipeline configuration
+   * Call pipeline configuration
    */
   callOutcomeConfigs CallOutcomeConfig[]
 
@@ -134,54 +128,43 @@ model Attendance {
 
 /**
  * ======================================================
- * PIPELINE CONFIG (MANAGER-ONLY, DOES NOT CHANGE LEAD STATUS)
+ * PIPELINE CONFIG (MANAGER CONTROLLED)
  * ======================================================
  */
 
-/**
- * This represents stages like:
- * NOT_PICKED_UP, BUSY, INTERESTED, etc
- */
 model CallOutcomeConfig {
   id     String @id @default(uuid())
   teamId String
 
   /**
-   * e.g. NOT_PICKED_UP, INTERESTED, WON, LOST
+   * Example: NOT_PICKED_UP, INTERESTED, WON, LOST
    */
   name String
 
   /**
-   * Which stage this belongs to
+   * ACTIVE → no lead status change
+   * CLOSED → updates lead status
    */
   stage PipelineStage
 
-  isSystem Boolean             @default(false)
-  reasons  CallOutcomeReason[]
+  isSystem Boolean @default(false)
+
+  reasons CallOutcomeReason[]
 
   team Team @relation(fields: [teamId], references: [id])
 
-  createdAt      DateTime       @default(now())
   leadActivities LeadActivity[]
+
+  createdAt DateTime @default(now())
 
   @@unique([teamId, name])
 }
 
-enum PipelineStage {
-  ACTIVE
-  CLOSED
-}
-
-/**
- * Reasons INSIDE an outcome
- * Example:
- * Outcome = NOT_INTERESTED
- * Reasons = ["Too expensive", "Not required"]
- */
 model CallOutcomeReason {
-  id        String   @id @default(uuid())
+  id        String @id @default(uuid())
   outcomeId String
   label     String
+
   createdAt DateTime @default(now())
 
   outcome        CallOutcomeConfig @relation(fields: [outcomeId], references: [id])
@@ -201,6 +184,9 @@ model Lead {
   personName  String
   phone       String
 
+  /**
+   * REAL status of lead
+   */
   status LeadStatus @default(FRESH)
 
   followUpAt DateTime?
@@ -227,7 +213,7 @@ model Lead {
 
 /**
  * ======================================================
- * LEAD ACTIVITY (CALL LOGGING)
+ * LEAD ACTIVITY (CALL HISTORY / REMARK / ASSIGNMENT)
  * ======================================================
  */
 
@@ -242,7 +228,6 @@ model LeadActivity {
   oldStatus LeadStatus?
   newStatus LeadStatus?
 
-  // ✅ REPLACED enum
   outcomeId String?
   outcome   CallOutcomeConfig? @relation(fields: [outcomeId], references: [id])
 
@@ -263,28 +248,9 @@ model LeadActivity {
 
 /**
  * ======================================================
- * AUDIT / FORMS / SETTINGS / INTEGRATIONS
+ * FORMS
  * ======================================================
  */
-
-model AuditLog {
-  id String @id @default(uuid())
-
-  action   String
-  entity   String
-  entityId String?
-
-  userId String?
-  user   User?   @relation(fields: [userId], references: [id])
-
-  meta Json?
-
-  createdAt DateTime @default(now())
-
-  @@index([action])
-  @@index([entity])
-  @@index([userId])
-}
 
 model Form {
   id String @id @default(uuid())
@@ -308,23 +274,58 @@ model Form {
   updatedAt DateTime @updatedAt
 }
 
+/**
+ * IMPORTANT:
+ * ❌ NO UNIQUE CONSTRAINT
+ * ✔ Multiple submissions per lead allowed
+ */
 model FormResponse {
-  id String @id @default(uuid())
-
-  formId String
-  leadId String
-  userId String
-
+  id             String   @id @default(uuid())
+  formId         String
+  leadId         String
+  userId         String
   schemaSnapshot Json
   values         Json
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  lead Lead @relation(fields: [leadId], references: [id])
+  form Form @relation(fields: [formId], references: [id])
+
+  // Add this unique constraint
+  @@unique([formId, leadId, userId], name: "formId_leadId_userId")
+}
+
+/**
+ * ======================================================
+ * AUDIT LOG
+ * ======================================================
+ */
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  action   String
+  entity   String
+  entityId String?
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  meta Json?
 
   createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
-  lead      Lead     @relation(fields: [leadId], references: [id])
-  form      Form     @relation(fields: [formId], references: [id])
 
-  @@unique([formId, leadId, userId])
+  @@index([action])
+  @@index([entity])
+  @@index([userId])
 }
+
+/**
+ * ======================================================
+ * SETTINGS / INTEGRATIONS
+ * ======================================================
+ */
 
 model Setting {
   id String @id @default(uuid())

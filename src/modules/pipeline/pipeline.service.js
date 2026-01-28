@@ -23,26 +23,29 @@ export const getPipelineData = async (teamId) => {
  * Create new custom outcome
  */
 export const createOutcomeService = async (teamId, payload) => {
-  const { name, reasons = [] } = payload;
+  const { name, stage, reasons = [] } = payload;
 
-  if (!name) {
-    throw new Error("Outcome name required");
+  if (!name || !name.trim()) {
+    throw new Error("Outcome name is required");
+  }
+
+  if (!stage) {
+    throw new Error("Stage is required");
   }
 
   return prisma.callOutcomeConfig.create({
     data: {
       teamId,
-      name,
-      outcome: name, // enum value
+      name: name.trim(),
+      stage, // Add this required field
       isSystem: false,
       reasons: {
-        create: reasons.map((label) => ({ label })),
+        create: reasons.map((label) => ({ label: label.trim() })),
       },
     },
     include: { reasons: true },
   });
 };
-
 /**
  * Update outcome + replace reasons
  */
@@ -77,5 +80,23 @@ export const updateOutcomeService = async (teamId, outcomeId, payload) => {
       },
     },
     include: { reasons: true },
+  });
+};
+
+export const deleteOutcomeService = async (teamId, outcomeId) => {
+  const outcome = await prisma.callOutcomeConfig.findFirst({
+    where: { id: outcomeId, teamId },
+  });
+
+  if (!outcome) {
+    throw new Error("Outcome not found");
+  }
+
+  if (outcome.isSystem) {
+    throw new Error("Cannot delete system outcomes");
+  }
+
+  return prisma.callOutcomeConfig.delete({
+    where: { id: outcomeId },
   });
 };

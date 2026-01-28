@@ -4,31 +4,52 @@ import { escalateOverdueLeads } from "./lead.escalation.js";
 import { getLeaderboardDate, applyBadgesAndLevels } from "./lead.validation.js";
 import { getPerformanceScores } from "./performance.service.js";
 
+/**
+ * ======================================================
+ * EMPLOYEE
+ * ======================================================
+ */
+
 export const getMyLeads = async (req, res, next) => {
   try {
     const leads = await service.getMyLeads(req.user.id);
     res.json(leads);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
-export const getLeads = async (req, res, next) => {
+export const getLeadById = async (req, res, next) => {
   try {
-    const { statuses, outcomes, employeeIds, page = 1, limit = 50 } = req.query;
+    const lead = await service.getLeadById(req.params.id);
+    res.json(lead);
+  } catch (err) {
+    next(err);
+  }
+};
 
-    const result = await service.getFilteredLeads({
-      manager: req.user,
-      statuses,
-      outcomes,
-      employeeIds,
-      page: Number(page),
-      limit: Number(limit),
+export const logCall = async (req, res, next) => {
+  try {
+    const { outcomeId, outcomeReasonId, remark, followUpAt } = req.body;
+
+    if (!outcomeId) {
+      return res.status(400).json({
+        message: "Call outcome is required",
+      });
+    }
+
+    const result = await service.logCall({
+      userId: req.user.id,
+      leadId: req.params.id,
+      outcomeId,
+      outcomeReasonId: outcomeReasonId ?? null,
+      remark: remark ?? null,
+      followUpAt,
     });
 
     res.json(result);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
@@ -46,41 +67,6 @@ export const completeLead = async (req, res, next) => {
   }
 };
 
-export const getLeadById = async (req, res, next) => {
-  try {
-    const lead = await service.getLeadById(req.params.id);
-    res.json(lead);
-  } catch (e) {
-    next(e);
-  }
-};
-
-export const logCall = async (req, res, next) => {
-  try {
-    const { outcomeId, outcomeReasonId, remark, followUpAt } = req.body;
-
-    // ✅ HARD VALIDATION (THIS FIXES YOUR ERROR)
-    if (!outcomeId) {
-      return res.status(400).json({
-        message: "Call outcome is required",
-      });
-    }
-
-    const result = await service.logCall({
-      userId: req.user.id,
-      leadId: req.params.id,
-      outcomeId,
-      outcomeReasonId: outcomeReasonId ?? null,
-      remark: remark ?? null,
-      followUpAt,
-    });
-
-    res.json(result);
-  } catch (e) {
-    next(e);
-  }
-};
-
 export const changeStatus = async (req, res, next) => {
   try {
     const { status, remark } = req.body;
@@ -89,45 +75,79 @@ export const changeStatus = async (req, res, next) => {
       req.user.id,
       req.params.id,
       status,
-      remark
+      remark,
     );
 
     res.json(result);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
-export const uploadLeads = async (req, res, next) => {
+/**
+ * ======================================================
+ * MANAGER – LEADS LIST & FILTERS
+ * ======================================================
+ */
+
+export const getLeads = async (req, res, next) => {
   try {
-    const result = await uploadLeadsFromExcel(req.file.path, req.user);
-    res.json({
-      message: "Leads uploaded",
-      inserted: result.count,
+    const { statuses, outcomes, employeeIds, page = 1, limit = 50 } = req.query;
+
+    const data = await service.getFilteredLeads({
+      manager: req.user,
+      statuses,
+      outcomes,
+      employeeIds,
+      page: Number(page),
+      limit: Number(limit),
     });
-  } catch (e) {
-    next(e);
+
+    res.json(data);
+  } catch (err) {
+    next(err);
   }
 };
 
-export const getKanban = async (req, res, next) => {
+/**
+ * ======================================================
+ * MANAGER – ASSIGN LEADS PAGE (NEW)
+ * ======================================================
+ */
+
+export const getAssignLeadsPage = async (req, res, next) => {
   try {
-    const data = await service.getKanban(req.user.teamId);
+    const { page = 1, limit = 50, search, employeeIds, outcomes } = req.query;
+
+    const data = await service.getAssignLeadsPageService({
+      manager: req.user,
+      page: Number(page),
+      limit: Number(limit),
+      search,
+      employeeIds,
+      outcomes,
+    });
+
     res.json(data);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
-export const getLeaderboard = async (req, res, next) => {
+export const getAssignLeadsAnalytics = async (req, res, next) => {
   try {
-    const fromDate = getLeaderboardDate(req.params.range);
-    const data = await service.getLeaderboard(req.user.teamId, fromDate);
-    res.json(data);
-  } catch (e) {
-    next(e);
+    const analytics = await service.getAssignLeadsAnalyticsService(req.user);
+    res.json(analytics);
+  } catch (err) {
+    next(err);
   }
 };
+
+/**
+ * ======================================================
+ * MANAGER – BULK ACTIONS
+ * ======================================================
+ */
 
 export const reassignLeads = async (req, res, next) => {
   try {
@@ -148,21 +168,31 @@ export const reassignLeads = async (req, res, next) => {
   }
 };
 
-export const getLeadGroups = async (req, res, next) => {
+export const uploadLeads = async (req, res, next) => {
   try {
-    const groups = await service.getLeadGroups(req.user.teamId);
-    res.json(groups);
-  } catch (e) {
-    next(e);
+    const result = await uploadLeadsFromExcel(req.file.path, req.user);
+
+    res.json({
+      message: "Leads uploaded successfully",
+      inserted: result.count,
+    });
+  } catch (err) {
+    next(err);
   }
 };
+
+/**
+ * ======================================================
+ * FOLLOW UPS
+ * ======================================================
+ */
 
 export const getTodayFollowUps = async (req, res, next) => {
   try {
     const data = await service.getTodayFollowUps(req.user);
     res.json(data);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
@@ -170,8 +200,8 @@ export const getUpcomingFollowUps = async (req, res, next) => {
   try {
     const data = await service.getUpcomingFollowUps(req.user);
     res.json(data);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
@@ -179,20 +209,55 @@ export const getOverdueFollowUps = async (req, res, next) => {
   try {
     const data = await service.getOverdueFollowUps(req.user);
     res.json(data);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };
 
 export const escalateOverdue = async (req, res, next) => {
   try {
     const count = await escalateOverdueLeads(req.user.teamId);
+
     res.json({
       message: "Overdue leads escalated",
       count,
     });
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * ======================================================
+ * ANALYTICS / DASHBOARD
+ * ======================================================
+ */
+
+export const getKanban = async (req, res, next) => {
+  try {
+    const data = await service.getKanban(req.user.teamId);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getLeadGroups = async (req, res, next) => {
+  try {
+    const groups = await service.getLeadGroups(req.user.teamId);
+    res.json(groups);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getLeaderboard = async (req, res, next) => {
+  try {
+    const fromDate = getLeaderboardDate(req.params.range);
+    const data = await service.getLeaderboard(req.user.teamId, fromDate);
+    res.json(data);
+  } catch (err) {
+    next(err);
   }
 };
 
@@ -203,9 +268,8 @@ export const getPerformance = async (req, res, next) => {
     const scores = await getPerformanceScores(req.user.teamId, fromDate);
 
     const finalData = applyBadgesAndLevels(scores);
-
     res.json(finalData);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 };

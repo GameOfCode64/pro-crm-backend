@@ -1,5 +1,6 @@
 import prisma from "../../config/db.js";
 import { ensurePipelineDefaults } from "./pipeline.seed.js";
+import { createOutcomeService } from "./pipeline.service.js";
 
 export const getPipeline = async (req, res, next) => {
   try {
@@ -37,7 +38,7 @@ export const getPipeline = async (req, res, next) => {
 
 export const createOutcome = async (req, res, next) => {
   try {
-    const { name, stage, reasons = [] } = req.body;
+    const { name, stage, reasons = [] } = req.body; // Add stage here
 
     const manager = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -48,20 +49,13 @@ export const createOutcome = async (req, res, next) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const outcome = await prisma.callOutcomeConfig.create({
-      data: {
-        teamId: manager.teamId,
-        name,
-        stage,
-        isSystem: false,
-        reasons: {
-          create: reasons.map((label) => ({ label })),
-        },
-      },
-      include: { reasons: true },
+    const outcome = await createOutcomeService(manager.teamId, {
+      name,
+      stage, // Pass stage to service
+      reasons,
     });
 
-    res.json(outcome);
+    res.status(201).json(outcome);
   } catch (err) {
     next(err);
   }
@@ -93,7 +87,7 @@ export const updateOutcome = async (req, res, next) => {
   }
 };
 
-export const deleteOutcomeReason = async (req, res, next) => {
+export const deleteOutcome = async (req, res, next) => {
   try {
     const { id } = req.params;
 
@@ -102,15 +96,30 @@ export const deleteOutcomeReason = async (req, res, next) => {
       select: { teamId: true, role: true },
     });
 
-    if (!manager || manager.role !== "MANAGER") {
+    if (!manager?.teamId || manager.role !== "MANAGER") {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    await prisma.callOutcomeReason.delete({
+    // Check if outcome exists and belongs to this team
+    const outcome = await prisma.callOutcomeConfig.findFirst({
+      where: { id, teamId: manager.teamId },
+    });
+
+    if (!outcome) {
+      return res.status(404).json({ message: "Outcome not found" });
+    }
+
+    // Check if it's a system outcome
+    if (outcome.isSystem) {
+      return res.status(400).json({ message: "Cannot delete system outcomes" });
+    }
+
+    // Delete the outcome (cascade will delete reasons)
+    await prisma.callOutcomeConfig.delete({
       where: { id },
     });
 
-    res.json({ success: true });
+    res.json({ message: "Outcome deleted successfully" });
   } catch (err) {
     next(err);
   }
