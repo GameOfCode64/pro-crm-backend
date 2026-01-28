@@ -8,7 +8,7 @@
     "start": "node src/server.js",
     "prisma": "prisma",
     "build": "npx prisma generate",
-    "postinstall": "npma prisma generate"
+    "postinstall": "npm prisma generate"
   },
   "keywords": [],
   "author": "@Gameofcode64",
