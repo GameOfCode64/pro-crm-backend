@@ -34,14 +34,16 @@ export const buildLeadsWorkbook = async (rows) => {
   // 🔍 Collect all form keys dynamically
   const formKeys = new Set();
   rows.forEach((r) =>
-    Object.keys(r.form || {}).forEach((k) => formKeys.add(k))
+    Object.keys(r.form || {}).forEach((k) => formKeys.add(k)),
   );
 
   sheet.columns = [
     { header: "Lead Name", key: "leadName", width: 20 },
     { header: "Phone", key: "phone", width: 15 },
     { header: "Company", key: "company", width: 20 },
+    { header: "Campaign", key: "campaign", width: 20 },
     { header: "Assigned To", key: "assignedTo", width: 18 },
+    { header: "Status", key: "status", width: 18 },
     { header: "Outcome", key: "outcome", width: 18 },
     { header: "Remark", key: "remark", width: 30 },
     { header: "Call Date", key: "callDate", width: 14 },

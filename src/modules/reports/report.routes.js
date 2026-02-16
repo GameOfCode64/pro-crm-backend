@@ -1,11 +1,20 @@
 import express from "express";
 import auth from "../../middlewares/auth.middleware.js";
 import role from "../../middlewares/role.middleware.js";
-import { exportAttendance, exportLeads } from "./report.controller.js";
+import {
+  exportAttendance,
+  exportLeads,
+  previewLeads,
+} from "./report.controller.js";
 
 const router = express.Router();
 
 router.post("/attendance/export", auth, role("MANAGER"), exportAttendance);
 
+// NEW: Preview endpoint
+router.post("/leads/preview", auth, role("MANAGER"), previewLeads);
+
+// Updated: Export endpoint
 router.post("/leads/export", auth, role("MANAGER"), exportLeads);
+
 export default router;

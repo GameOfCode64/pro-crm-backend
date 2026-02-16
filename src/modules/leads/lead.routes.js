@@ -1,183 +1,52 @@
-import express from "express";
-import multer from "multer";
+// Update your lead.routes.js to include these routes
 
-import authMiddleware from "../../middlewares/auth.middleware.js";
-import roleMiddleware from "../../middlewares/role.middleware.js";
+import express from "express";
+import auth from "../../middlewares/auth.middleware.js";
+import role from "../../middlewares/role.middleware.js";
 
 import {
-  getMyLeads,
-  getLeads,
+  getLeadsList,
   getLeadById,
-  logCall,
-  changeStatus,
-  uploadLeads,
-  getKanban,
-  getLeaderboard,
-  reassignLeads,
-  getTodayFollowUps,
-  getUpcomingFollowUps,
-  getOverdueFollowUps,
-  escalateOverdue,
-  getLeadGroups,
-  getPerformance,
-  completeLead,
-
-  // 🔥 NEW – ASSIGN LEADS PAGE
-  getAssignLeadsPage,
-  getAssignLeadsAnalytics,
+  assignLeads,
+  countCampaignLeads,
+  bulkUpdateCampaign,
+  bulkUpdateSelected,
+  getLeadActivities,
+  getLeadForms,
+  getMyLeads, // NEW
+  completeLead, // NEW
 } from "./lead.controller.js";
 
-import { followUpSSE } from "./lead.sse.js";
-
 const router = express.Router();
-const upload = multer({ dest: "uploads/" });
 
-/**
- * ======================================================
- * EMPLOYEE ROUTES
- * ======================================================
- */
+/* ================= EMPLOYEE/CALLER ROUTES ================= */
 
-router.get("/my", authMiddleware, roleMiddleware("EMPLOYEE"), getMyLeads);
+router.get("/my-leads", auth, role("EMPLOYEE"), getMyLeads);
+router.post("/complete", auth, role("EMPLOYEE"), completeLead);
 
-router.get(
-  "/:id",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE", "MANAGER"),
-  getLeadById,
-);
+/* ================= MANAGER ROUTES ================= */
 
-router.post(
-  "/:id/call",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE", "MANAGER"),
-  logCall,
-);
+router.get("/", auth, role("MANAGER"), getLeadsList);
+router.get("/count", auth, role("MANAGER"), countCampaignLeads);
+router.get("/:id", auth, role("MANAGER", "EMPLOYEE"), getLeadById);
 
-router.post(
-  "/:id/status",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE"),
-  changeStatus,
-);
-
-router.post(
-  "/:id/complete",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE"),
-  completeLead,
-);
-
-/**
- * ======================================================
- * FOLLOW-UPS (EMPLOYEE + MANAGER)
- * ======================================================
- */
+/* ================= LEAD ACTIVITIES & FORMS ================= */
 
 router.get(
-  "/followups/today",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE", "MANAGER"),
-  getTodayFollowUps,
+  "/:id/activities",
+  auth,
+  role("MANAGER", "EMPLOYEE"),
+  getLeadActivities,
 );
+router.get("/:id/forms", auth, role("MANAGER", "EMPLOYEE"), getLeadForms);
 
-router.get(
-  "/followups/upcoming",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE", "MANAGER"),
-  getUpcomingFollowUps,
-);
+/* ================= BULK OPERATIONS ================= */
 
-router.get(
-  "/followups/overdue",
-  authMiddleware,
-  roleMiddleware("EMPLOYEE", "MANAGER"),
-  getOverdueFollowUps,
-);
+router.post("/bulk-update-selected", auth, role("MANAGER"), bulkUpdateSelected);
+router.post("/bulk-update-campaign", auth, role("MANAGER"), bulkUpdateCampaign);
 
-router.post(
-  "/escalate/overdue",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  escalateOverdue,
-);
+/* ================= LEGACY ASSIGN ================= */
 
-/**
- * 🔴 FOLLOW-UP LIVE STREAM (SSE)
- */
-router.get("/followups/stream", authMiddleware, followUpSSE);
-
-/**
- * ======================================================
- * MANAGER ROUTES
- * ======================================================
- */
-
-router.get("/", authMiddleware, roleMiddleware("MANAGER"), getLeads);
-
-router.post(
-  "/upload",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  upload.single("file"),
-  uploadLeads,
-);
-
-router.post(
-  "/reassign",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  reassignLeads,
-);
-
-router.get("/groups", authMiddleware, roleMiddleware("MANAGER"), getLeadGroups);
-
-router.get("/kanban", authMiddleware, roleMiddleware("MANAGER"), getKanban);
-
-router.get(
-  "/leaderboard/:range",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  getLeaderboard,
-);
-
-router.get(
-  "/performance/:range",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  getPerformance,
-);
-
-/**
- * ======================================================
- * 🔥 NEW – ASSIGN LEADS PAGE (MANAGER)
- * ======================================================
- */
-
-/**
- * Leads list for Assign Leads page
- * Supports:
- * - pagination
- * - employee filter
- * - outcome filter
- * - search
- */
-router.get(
-  "/assign/page",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  getAssignLeadsPage,
-);
-
-/**
- * Analytics for Assign Leads page
- * Used for charts (by employee / by outcome)
- */
-router.get(
-  "/assign/analytics",
-  authMiddleware,
-  roleMiddleware("MANAGER"),
-  getAssignLeadsAnalytics,
-);
+router.post("/assign", auth, role("MANAGER"), assignLeads);
 
 export default router;

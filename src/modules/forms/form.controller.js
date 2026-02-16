@@ -39,25 +39,37 @@ export const createForm = async (req, res, next) => {
 /**
  * GET active form (employee / manager)
  */
+// Add this to your form.controller.js or create a new file
+
+/* ================= GET ACTIVE FORM ================= */
+
 export const getActiveForm = async (req, res, next) => {
   try {
-    if (!req.user?.teamId) {
-      return res.status(400).json({ message: "User has no team assigned" });
-    }
-
-    const form = await prisma.form.findFirst({
+    const activeForm = await prisma.form.findFirst({
       where: {
         teamId: req.user.teamId,
         isActive: true,
       },
-      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        schema: true,
+      },
     });
 
-    res.json(form ?? null);
+    if (!activeForm) {
+      return res.json(null);
+    }
+
+    res.json(activeForm);
   } catch (err) {
     next(err);
   }
 };
+
+// And add this route to your form.routes.js:
+// router.get("/active", auth, role("EMPLOYEE", "MANAGER"), getActiveForm);
 
 /**
  * EMPLOYEE: Save / update form response

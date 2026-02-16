@@ -17,7 +17,6 @@ export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
     throw new Error("Manager has no team");
   }
 
-  // 🧑 Employees
   const employees = await prisma.user.findMany({
     where: {
       teamId: manager.teamId,
@@ -33,7 +32,6 @@ export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
 
   const dates = getDateRange(from, to);
 
-  // 📞 Calls
   const calls = await prisma.leadActivity.findMany({
     where: {
       type: "CALL",
@@ -49,7 +47,6 @@ export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
     },
   });
 
-  // 🧠 Build lookup: employeeId + date
   const callMap = {};
   for (const c of calls) {
     const day = new Date(c.createdAt).toDateString();
@@ -57,7 +54,6 @@ export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
     callMap[key] = (callMap[key] || 0) + 1;
   }
 
-  // 📊 Final rows
   const rows = [];
 
   for (const emp of employees) {
@@ -83,7 +79,8 @@ export const getLeadsExportData = async ({
   manager,
   from,
   to,
-  outcomeNames = [],
+  campaignId,
+  statuses = [],
 }) => {
   if (!manager.teamId) {
     throw new Error("Manager has no team");
@@ -116,22 +113,25 @@ export const getLeadsExportData = async ({
   const leadIds = latestCalls.map((c) => c.leadId);
 
   /**
-   * 🔗 Fetch leads + relations
+   * 🔗 Fetch leads + relations with filters
    */
   const leads = await prisma.lead.findMany({
     where: {
       id: { in: leadIds },
       teamId: manager.teamId,
+      ...(campaignId && campaignId !== "all" ? { campaignId } : {}),
+      ...(statuses.length > 0 ? { status: { in: statuses } } : {}),
     },
     include: {
       assignedTo: {
         select: { name: true },
       },
-
-      // ✅ CORRECT RELATION NAME
+      campaign: {
+        select: { name: true },
+      },
       formResponses: {
         orderBy: { createdAt: "desc" },
-        take: 1, // latest form only
+        take: 1,
       },
     },
   });
@@ -151,30 +151,25 @@ export const getLeadsExportData = async ({
   const outcomeMap = Object.fromEntries(outcomes.map((o) => [o.id, o.name]));
 
   /**
-   * 🧹 Filter + format export rows
+   * 🧹 Format export rows
    */
   return latestCalls
     .map((call) => {
       const lead = leadMap[call.leadId];
       if (!lead) return null;
 
-      const outcomeName = outcomeMap[call.outcomeId] ?? "UNKNOWN";
-
-      // 🔍 Outcome filter
-      if (outcomeNames.length && !outcomeNames.includes(outcomeName)) {
-        return null;
-      }
+      const outcomeName = outcomeMap[call.outcomeId] ?? "NO OUTCOME";
 
       return {
-        leadName: lead.personName,
-        phone: lead.phone,
-        company: lead.companyName,
-        assignedTo: lead.assignedTo?.name ?? "",
+        leadName: lead.personName || "",
+        phone: lead.phone || "",
+        company: lead.companyName || "",
+        campaign: lead.campaign?.name || "",
+        assignedTo: lead.assignedTo?.name || "",
+        status: lead.status || "",
         outcome: outcomeName,
         remark: call.remark ?? "",
         callDate: call.createdAt.toISOString().split("T")[0],
-
-        // ✅ SAFE FORM ACCESS
         form: lead.formResponses?.[0]?.values ?? {},
       };
     })

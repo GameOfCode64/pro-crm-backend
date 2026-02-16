@@ -19,21 +19,6 @@ enum Role {
   EMPLOYEE
 }
 
-/**
- * REAL lead lifecycle status (ONE VALUE ONLY)
- */
-enum LeadStatus {
-  FRESH
-  ASSIGNED
-  IN_PROGRESS
-  FOLLOW_UP
-  WON
-  LOST
-}
-
-/**
- * Activity type (AUDITABLE EVENTS)
- */
 enum LeadActivityType {
   CALL
   STATUS_CHANGE
@@ -41,12 +26,34 @@ enum LeadActivityType {
   ASSIGNED
 }
 
-/**
- * Outcome stage (controls lead status updates)
- */
 enum PipelineStage {
   ACTIVE
   CLOSED
+}
+
+enum UploadStatus {
+  UPLOADED
+  MAPPED
+  VALIDATED
+  CONFIRMED
+  COMPLETED
+  FAILED
+}
+
+enum DuplicateAction {
+  SKIP
+  UPDATE
+  KEEP_BOTH
+}
+
+enum SettingScope {
+  SYSTEM
+  TEAM
+}
+
+enum IntegrationProvider {
+  JUSTDIAL
+  INDIAMART
 }
 
 /**
@@ -76,10 +83,13 @@ model User {
   leadActivities LeadActivity[] @relation("UserLeadActivities")
 
   attendance Attendance[]
+  auditLogs  AuditLog[]
 
-  auditLogs     AuditLog[]
   forms         Form[]
   formResponses FormResponse[]
+
+  uploadSessions UploadSession[]
+  campaigns      Campaign[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -93,14 +103,15 @@ model Team {
   manager   User   @relation("TeamManager", fields: [managerId], references: [id])
 
   users User[] @relation("TeamMembers")
-  leads Lead[]
 
-  /**
-   * Call pipeline configuration
-   */
-  callOutcomeConfigs CallOutcomeConfig[]
+  leads     Lead[]
+  campaigns Campaign[]
+
+  pipelineConfigs CallOutcomeConfig[]
 
   forms Form[]
+
+  uploadSessions UploadSession[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -128,7 +139,34 @@ model Attendance {
 
 /**
  * ======================================================
- * PIPELINE CONFIG (MANAGER CONTROLLED)
+ * CAMPAIGN
+ * ======================================================
+ */
+
+model Campaign {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  source      String?
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id])
+
+  leads   Lead[]
+  uploads UploadSession[]
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([teamId])
+}
+
+/**
+ * ======================================================
+ * PIPELINE / STATUS CONFIG (SOURCE OF TRUTH)
  * ======================================================
  */
 
@@ -136,28 +174,21 @@ model CallOutcomeConfig {
   id     String @id @default(uuid())
   teamId String
 
-  /**
-   * Example: NOT_PICKED_UP, INTERESTED, WON, LOST
-   */
-  name String
-
-  /**
-   * ACTIVE → no lead status change
-   * CLOSED → updates lead status
-   */
+  key   String // INTERNAL (e.g. INTERESTED)
+  name  String // DISPLAY (e.g. Interested)
+  color String // HEX color for UI
   stage PipelineStage
 
   isSystem Boolean @default(false)
 
   reasons CallOutcomeReason[]
 
-  team Team @relation(fields: [teamId], references: [id])
-
+  team           Team           @relation(fields: [teamId], references: [id])
   leadActivities LeadActivity[]
 
   createdAt DateTime @default(now())
 
-  @@unique([teamId, name])
+  @@unique([teamId, key])
 }
 
 model CallOutcomeReason {
@@ -185,9 +216,9 @@ model Lead {
   phone       String
 
   /**
-   * REAL status of lead
+   * PIPELINE STATUS KEY
    */
-  status LeadStatus @default(FRESH)
+  status String
 
   followUpAt DateTime?
 
@@ -196,6 +227,9 @@ model Lead {
 
   teamId String
   team   Team   @relation(fields: [teamId], references: [id])
+
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id])
 
   meta Json?
 
@@ -207,13 +241,14 @@ model Lead {
 
   @@index([teamId])
   @@index([assignedToId])
+  @@index([campaignId])
   @@index([status])
   @@index([phone])
 }
 
 /**
  * ======================================================
- * LEAD ACTIVITY (CALL HISTORY / REMARK / ASSIGNMENT)
+ * LEAD ACTIVITY (AUDIT TRAIL)
  * ======================================================
  */
 
@@ -225,8 +260,8 @@ model LeadActivity {
 
   type LeadActivityType
 
-  oldStatus LeadStatus?
-  newStatus LeadStatus?
+  oldStatus String?
+  newStatus String?
 
   outcomeId String?
   outcome   CallOutcomeConfig? @relation(fields: [outcomeId], references: [id])
@@ -261,8 +296,7 @@ model Form {
   teamId String
   team   Team   @relation(fields: [teamId], references: [id])
 
-  schema Json
-
+  schema   Json
   isActive Boolean @default(true)
 
   createdById String
@@ -274,11 +308,6 @@ model Form {
   updatedAt DateTime @updatedAt
 }
 
-/**
- * IMPORTANT:
- * ❌ NO UNIQUE CONSTRAINT
- * ✔ Multiple submissions per lead allowed
- */
 model FormResponse {
   id             String   @id @default(uuid())
   formId         String
@@ -292,8 +321,64 @@ model FormResponse {
   lead Lead @relation(fields: [leadId], references: [id])
   form Form @relation(fields: [formId], references: [id])
 
-  // Add this unique constraint
-  @@unique([formId, leadId, userId], name: "formId_leadId_userId")
+  @@unique([formId, leadId, userId])
+}
+
+/**
+ * ======================================================
+ * UPLOAD SYSTEM (EXCEL / CSV)
+ * ======================================================
+ */
+
+model UploadSession {
+  id         String @id @default(uuid())
+  fileName   String
+  filePath   String
+  headers    Json
+  sampleRows Json
+
+  status      String
+  teamId      String
+  createdById String
+
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id])
+
+  // ✅ ADD THIS
+  stats Json?
+
+  mappings       UploadFieldMapping[]
+  duplicateRules UploadDuplicateRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    String?
+  team      Team     @relation(fields: [teamId], references: [id])
+}
+
+model UploadFieldMapping {
+  id String @id @default(uuid())
+
+  uploadId String
+  upload   UploadSession @relation(fields: [uploadId], references: [id])
+
+  excelColumn String
+  targetField String // phone | personName | companyName | meta.custom_x
+
+  createdAt DateTime @default(now())
+}
+
+model UploadDuplicateRule {
+  id String @id @default(uuid())
+
+  uploadId String
+  upload   UploadSession @relation(fields: [uploadId], references: [id])
+
+  field  String
+  action DuplicateAction
+
+  createdAt DateTime @default(now())
 }
 
 /**
@@ -342,11 +427,6 @@ model Setting {
   @@unique([scope, teamId, key])
 }
 
-enum SettingScope {
-  SYSTEM
-  TEAM
-}
-
 model Integration {
   id String @id @default(uuid())
 
@@ -360,9 +440,4 @@ model Integration {
   updatedAt DateTime @updatedAt
 
   @@unique([provider, teamId])
-}
-
-enum IntegrationProvider {
-  JUSTDIAL
-  INDIAMART
 }

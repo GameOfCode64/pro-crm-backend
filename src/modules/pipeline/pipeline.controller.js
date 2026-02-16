@@ -1,57 +1,59 @@
 import prisma from "../../config/db.js";
 import { ensurePipelineDefaults } from "./pipeline.seed.js";
-import { createOutcomeService } from "./pipeline.service.js";
+import {
+  getPipelineData,
+  createOutcomeService,
+  updateOutcomeService,
+  deleteOutcomeService,
+} from "./pipeline.service.js";
 
+/**
+ * GET PIPELINE
+ */
 export const getPipeline = async (req, res, next) => {
   try {
     const user = req.user;
 
     if (!user?.teamId) {
-      return res.status(400).json({
-        message: "User has no team assigned",
+      return res.json({
         initialStage: [],
         activeStage: [],
         closedStage: [],
       });
     }
 
-    // 🔥 ENSURE DEFAULTS (SAFE TO CALL MULTIPLE TIMES)
+    // 🔥 Ensure system defaults exist
     await ensurePipelineDefaults(user.teamId);
 
-    const outcomes = await prisma.callOutcomeConfig.findMany({
-      where: { teamId: user.teamId },
-      include: {
-        reasons: { orderBy: { createdAt: "asc" } },
-      },
-      orderBy: { createdAt: "asc" },
-    });
+    const pipeline = await getPipelineData(user.teamId);
 
-    res.json({
-      initialStage: ["FRESH"],
-      activeStage: outcomes.filter((o) => o.stage === "ACTIVE"),
-      closedStage: outcomes.filter((o) => o.stage === "CLOSED"),
-    });
+    res.json(pipeline);
   } catch (err) {
     next(err);
   }
 };
 
+/**
+ * CREATE OUTCOME
+ */
 export const createOutcome = async (req, res, next) => {
   try {
-    const { name, stage, reasons = [] } = req.body; // Add stage here
+    const { key, name, stage, color, reasons = [] } = req.body;
 
     const manager = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { teamId: true, role: true },
     });
 
-    if (!manager?.teamId || manager.role !== "MANAGER") {
+    if (!manager || manager.role !== "MANAGER") {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
     const outcome = await createOutcomeService(manager.teamId, {
+      key,
       name,
-      stage, // Pass stage to service
+      stage,
+      color,
       reasons,
     });
 
@@ -61,24 +63,18 @@ export const createOutcome = async (req, res, next) => {
   }
 };
 
+/**
+ * UPDATE OUTCOME
+ */
 export const updateOutcome = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, reasons = [] } = req.body;
+    const { name, color, reasons = [] } = req.body;
 
-    await prisma.callOutcomeReason.deleteMany({
-      where: { outcomeId: id },
-    });
-
-    const updated = await prisma.callOutcomeConfig.update({
-      where: { id },
-      data: {
-        name,
-        reasons: {
-          create: reasons.map((label) => ({ label })),
-        },
-      },
-      include: { reasons: true },
+    const updated = await updateOutcomeService(req.user.teamId, id, {
+      name,
+      color,
+      reasons,
     });
 
     res.json(updated);
@@ -87,39 +83,14 @@ export const updateOutcome = async (req, res, next) => {
   }
 };
 
+/**
+ * DELETE OUTCOME
+ */
 export const deleteOutcome = async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const deleted = await deleteOutcomeService(req.user.teamId, req.params.id);
 
-    const manager = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: { teamId: true, role: true },
-    });
-
-    if (!manager?.teamId || manager.role !== "MANAGER") {
-      return res.status(403).json({ message: "Unauthorized" });
-    }
-
-    // Check if outcome exists and belongs to this team
-    const outcome = await prisma.callOutcomeConfig.findFirst({
-      where: { id, teamId: manager.teamId },
-    });
-
-    if (!outcome) {
-      return res.status(404).json({ message: "Outcome not found" });
-    }
-
-    // Check if it's a system outcome
-    if (outcome.isSystem) {
-      return res.status(400).json({ message: "Cannot delete system outcomes" });
-    }
-
-    // Delete the outcome (cascade will delete reasons)
-    await prisma.callOutcomeConfig.delete({
-      where: { id },
-    });
-
-    res.json({ message: "Outcome deleted successfully" });
+    res.json({ message: "Outcome deleted", deleted });
   } catch (err) {
     next(err);
   }

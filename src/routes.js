@@ -13,7 +13,9 @@ import auditRoutes from "./modules/audit/audit.routes.js";
 import integrationRoutes from "./modules/integrations/integration.routes.js";
 import settingRoutes from "./modules/settings/setting.routes.js";
 import pipelineRoutes from "./modules/pipeline/pipeline.routes.js";
-import leaderboardRoutes from "./modules/leaderboard/leaderboard.routes.js";
+import uploadsRoutes from "./modules/uploads/upload.routes.js";
+import campaignRoutes from "./modules/campaign/campaign.routes.js";
+// import leaderboardRoutes from "./modules/leaderboard/leaderboard.routes.js";
 
 const router = express.Router();
 
@@ -32,11 +34,13 @@ router.use("/teams", teamRoutes);
  * OPERATIONS
  */
 router.use("/attendance", attendanceRoutes);
+router.use("/campaigns", campaignRoutes);
 router.use("/leads", leadRoutes);
 
 /**
  * BUSINESS MODULES
  */
+router.use("/uploads", uploadsRoutes);
 router.use("/forms", formRoutes);
 router.use("/reports", reportRoutes);
 router.use("/pipeline", pipelineRoutes);
@@ -45,7 +49,7 @@ router.use("/dashboard", dashboardRoutes);
 /**
  * SYSTEM & REAL-TIME
  */
-router.use("/leaderboard", leaderboardRoutes);
+// router.use("/leaderboard", leaderboardRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/audit", auditRoutes);
 

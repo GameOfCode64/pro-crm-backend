@@ -1,274 +1,462 @@
-import * as service from "./lead.service.js";
-import { uploadLeadsFromExcel } from "./lead.upload.js";
-import { escalateOverdueLeads } from "./lead.escalation.js";
-import { getLeaderboardDate, applyBadgesAndLevels } from "./lead.validation.js";
-import { getPerformanceScores } from "./performance.service.js";
+import prisma from "../../config/db.js";
+import {
+  getLeadsListService,
+  getLeadByIdService,
+  assignLeadsService,
+} from "./lead.service.js";
 
-/**
- * ======================================================
- * EMPLOYEE
- * ======================================================
- */
+/* ================= GET LEADS ================= */
 
-export const getMyLeads = async (req, res, next) => {
+export const getLeadsList = async (req, res, next) => {
   try {
-    const leads = await service.getMyLeads(req.user.id);
-    res.json(leads);
+    const {
+      search,
+      statuses,
+      assignees,
+      campaignId,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const result = await getLeadsListService({
+      teamId: req.user.teamId,
+      search,
+      statuses,
+      assignees,
+      campaignId,
+      page: Number(page),
+      limit: Number(limit),
+    });
+
+    res.json(result);
   } catch (err) {
     next(err);
   }
 };
 
+/* ================= SINGLE LEAD ================= */
+
 export const getLeadById = async (req, res, next) => {
   try {
-    const lead = await service.getLeadById(req.params.id);
+    const lead = await getLeadByIdService(req.params.id, req.user.teamId);
     res.json(lead);
   } catch (err) {
     next(err);
   }
 };
 
-export const logCall = async (req, res, next) => {
-  try {
-    const { outcomeId, outcomeReasonId, remark, followUpAt } = req.body;
+/* ================= COUNT CAMPAIGN LEADS ================= */
 
-    if (!outcomeId) {
-      return res.status(400).json({
-        message: "Call outcome is required",
+export const countCampaignLeads = async (req, res, next) => {
+  try {
+    const { campaignId } = req.query;
+
+    if (!campaignId) {
+      return res.status(400).json({ error: "Campaign ID is required" });
+    }
+
+    const total = await prisma.lead.count({
+      where: {
+        campaignId,
+        teamId: req.user.teamId,
+      },
+    });
+
+    res.json({ total });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ================= BULK UPDATE - SELECTED LEADS ================= */
+
+export const bulkUpdateSelected = async (req, res, next) => {
+  try {
+    const { leadIds, status, employeeDistribution } = req.body;
+
+    if (!leadIds || leadIds.length === 0) {
+      return res.status(400).json({ error: "No leads selected" });
+    }
+
+    // Verify leads belong to this team
+    const leads = await prisma.lead.findMany({
+      where: {
+        id: { in: leadIds },
+        teamId: req.user.teamId,
+      },
+      select: { id: true },
+    });
+
+    if (leads.length === 0) {
+      return res.status(404).json({ error: "No valid leads found" });
+    }
+
+    const validLeadIds = leads.map((l) => l.id);
+
+    // If no employee distribution, just update status
+    if (!employeeDistribution || employeeDistribution.length === 0) {
+      if (!status) {
+        return res.status(400).json({
+          error: "Either status or employee distribution is required",
+        });
+      }
+
+      await prisma.lead.updateMany({
+        where: { id: { in: validLeadIds } },
+        data: { status },
+      });
+
+      return res.json({
+        success: true,
+        message: "Leads status updated successfully",
+        updated: validLeadIds.length,
       });
     }
 
-    const result = await service.logCall({
-      userId: req.user.id,
-      leadId: req.params.id,
-      outcomeId,
-      outcomeReasonId: outcomeReasonId ?? null,
-      remark: remark ?? null,
-      followUpAt,
+    // If employee distribution exists, assign leads
+    const employees = employeeDistribution.map((emp) => ({
+      employeeId: emp.employeeId,
+      percentage: emp.percentage,
+    }));
+
+    const result = await assignLeadsService({
+      manager: req.user,
+      leadIds: validLeadIds,
+      employees,
+      statusOverride: status,
     });
 
-    res.json(result);
+    res.json({
+      success: true,
+      message: "Leads assigned successfully",
+      ...result,
+    });
+  } catch (err) {
+    console.error("Bulk update selected error:", err);
+    next(err);
+  }
+};
+
+/* ================= BULK UPDATE - CAMPAIGN RANGE ================= */
+
+export const bulkUpdateCampaign = async (req, res, next) => {
+  try {
+    const {
+      campaignId,
+      limit,
+      offset = 0,
+      status,
+      employeeDistribution,
+    } = req.body;
+
+    if (!campaignId) {
+      return res.status(400).json({ error: "Campaign ID is required" });
+    }
+
+    // Fetch leads from campaign with offset and limit
+    const leads = await prisma.lead.findMany({
+      where: {
+        campaignId,
+        teamId: req.user.teamId,
+      },
+      skip: offset,
+      take: limit || 999999,
+      select: { id: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    if (leads.length === 0) {
+      return res.status(404).json({ error: "No leads found in campaign" });
+    }
+
+    const leadIds = leads.map((l) => l.id);
+
+    // If no employee distribution, just update status
+    if (!employeeDistribution || employeeDistribution.length === 0) {
+      if (!status) {
+        return res.status(400).json({
+          error: "Either status or employee distribution is required",
+        });
+      }
+
+      await prisma.lead.updateMany({
+        where: { id: { in: leadIds } },
+        data: { status },
+      });
+
+      return res.json({
+        success: true,
+        message: "Leads status updated successfully",
+        updated: leadIds.length,
+      });
+    }
+
+    // If employee distribution exists, assign leads
+    const employees = employeeDistribution.map((emp) => ({
+      employeeId: emp.employeeId,
+      percentage: emp.percentage,
+    }));
+
+    const result = await assignLeadsService({
+      manager: req.user,
+      leadIds,
+      employees,
+      statusOverride: status,
+    });
+
+    res.json({
+      success: true,
+      message: "Leads assigned successfully",
+      ...result,
+    });
+  } catch (err) {
+    console.error("Bulk update campaign error:", err);
+    next(err);
+  }
+};
+
+/* ================= LEGACY ASSIGN (Keep for backwards compatibility) ================= */
+
+export const assignLeads = async (req, res, next) => {
+  try {
+    const result = await assignLeadsService({
+      manager: req.user,
+      leadIds: req.body.leadIds,
+      employees: req.body.employees,
+    });
+
+    res.json({
+      message: "Leads assigned successfully",
+      ...result,
+    });
   } catch (err) {
     next(err);
   }
 };
+
+// Add these to your lead.controller.js
+
+/* ================= GET LEAD ACTIVITIES ================= */
+
+export const getLeadActivities = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const activities = await prisma.leadActivity.findMany({
+      where: {
+        leadId: id,
+        lead: {
+          teamId: req.user.teamId, // Verify lead belongs to user's team
+        },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        outcome: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+            stage: true,
+          },
+        },
+        outcomeReason: {
+          select: {
+            id: true,
+            label: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    res.json(activities);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ================= GET LEAD FORM RESPONSES ================= */
+
+export const getLeadForms = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const formResponses = await prisma.formResponse.findMany({
+      where: {
+        leadId: id,
+        lead: {
+          teamId: req.user.teamId, // Verify lead belongs to user's team
+        },
+      },
+      include: {
+        form: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
+        user: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    res.json(formResponses);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Add this to your lead.controller.js
+
+/* ================= GET MY LEADS (FOR EMPLOYEES/CALLERS) ================= */
+
+export const getMyLeads = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const leads = await prisma.lead.findMany({
+      where: {
+        assignedToId: userId,
+        teamId: req.user.teamId,
+        // Exclude won/lost leads from main list
+        status: {
+          notIn: ["WON", "LOST"],
+        },
+      },
+      include: {
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        campaign: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        activities: {
+          where: {
+            createdAt: {
+              gte: today,
+            },
+            type: "CALL",
+          },
+          select: {
+            id: true,
+            createdAt: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 1,
+        },
+      },
+      orderBy: [
+        { followUpAt: "asc" }, // Prioritize follow-ups
+        { createdAt: "asc" }, // Then oldest first
+      ],
+    });
+
+    // Add computed fields
+    const enrichedLeads = leads.map((lead) => ({
+      ...lead,
+      calledToday: lead.activities.length > 0,
+      lastCallTime: lead.activities[0]?.createdAt || null,
+    }));
+
+    res.json(enrichedLeads);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ================= COMPLETE LEAD CALL ================= */
 
 export const completeLead = async (req, res, next) => {
   try {
-    const result = await service.completeLeadService({
-      userId: req.user.id,
-      leadId: req.params.id,
-      ...req.body,
+    const { leadId, outcomeId, outcomeReasonId, remark, formValues } = req.body;
+
+    // Get outcome to determine new status
+    const outcome = await prisma.callOutcomeConfig.findUnique({
+      where: { id: outcomeId },
     });
 
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-};
+    if (!outcome) {
+      return res.status(404).json({ error: "Outcome not found" });
+    }
 
-export const changeStatus = async (req, res, next) => {
-  try {
-    const { status, remark } = req.body;
-
-    const result = await service.changeStatus(
-      req.user.id,
-      req.params.id,
-      status,
-      remark,
-    );
-
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * ======================================================
- * MANAGER – LEADS LIST & FILTERS
- * ======================================================
- */
-
-export const getLeads = async (req, res, next) => {
-  try {
-    const { statuses, outcomes, employeeIds, page = 1, limit = 50 } = req.query;
-
-    const data = await service.getFilteredLeads({
-      manager: req.user,
-      statuses,
-      outcomes,
-      employeeIds,
-      page: Number(page),
-      limit: Number(limit),
+    // Update lead status
+    const updatedLead = await prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        status: outcome.name,
+      },
     });
 
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * ======================================================
- * MANAGER – ASSIGN LEADS PAGE (NEW)
- * ======================================================
- */
-
-export const getAssignLeadsPage = async (req, res, next) => {
-  try {
-    const { page = 1, limit = 50, search, employeeIds, outcomes } = req.query;
-
-    const data = await service.getAssignLeadsPageService({
-      manager: req.user,
-      page: Number(page),
-      limit: Number(limit),
-      search,
-      employeeIds,
-      outcomes,
+    // Create activity
+    await prisma.leadActivity.create({
+      data: {
+        leadId,
+        userId: req.user.id,
+        type: "CALL",
+        outcomeId,
+        outcomeReasonId: outcomeReasonId || null,
+        remark: remark || null,
+      },
     });
 
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
+    // Save form response if provided
+    if (formValues && Object.keys(formValues).length > 0) {
+      const activeForm = await prisma.form.findFirst({
+        where: {
+          teamId: req.user.teamId,
+          isActive: true,
+        },
+      });
 
-export const getAssignLeadsAnalytics = async (req, res, next) => {
-  try {
-    const analytics = await service.getAssignLeadsAnalyticsService(req.user);
-    res.json(analytics);
-  } catch (err) {
-    next(err);
-  }
-};
+      if (activeForm) {
+        await prisma.formResponse.upsert({
+          where: {
+            formId_leadId_userId: {
+              formId: activeForm.id,
+              leadId,
+              userId: req.user.id,
+            },
+          },
+          create: {
+            formId: activeForm.id,
+            leadId,
+            userId: req.user.id,
+            schemaSnapshot: activeForm.schema,
+            values: formValues,
+          },
+          update: {
+            values: formValues,
+          },
+        });
+      }
+    }
 
-/**
- * ======================================================
- * MANAGER – BULK ACTIONS
- * ======================================================
- */
-
-export const reassignLeads = async (req, res, next) => {
-  try {
-    const { leadIds, employeeIds } = req.body;
-
-    const count = await service.reassignLeadsService({
-      manager: req.user,
-      leadIds,
-      employeeIds,
-    });
-
-    res.json({
-      message: "Leads reassigned successfully",
-      count,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const uploadLeads = async (req, res, next) => {
-  try {
-    const result = await uploadLeadsFromExcel(req.file.path, req.user);
-
-    res.json({
-      message: "Leads uploaded successfully",
-      inserted: result.count,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * ======================================================
- * FOLLOW UPS
- * ======================================================
- */
-
-export const getTodayFollowUps = async (req, res, next) => {
-  try {
-    const data = await service.getTodayFollowUps(req.user);
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const getUpcomingFollowUps = async (req, res, next) => {
-  try {
-    const data = await service.getUpcomingFollowUps(req.user);
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const getOverdueFollowUps = async (req, res, next) => {
-  try {
-    const data = await service.getOverdueFollowUps(req.user);
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const escalateOverdue = async (req, res, next) => {
-  try {
-    const count = await escalateOverdueLeads(req.user.teamId);
-
-    res.json({
-      message: "Overdue leads escalated",
-      count,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * ======================================================
- * ANALYTICS / DASHBOARD
- * ======================================================
- */
-
-export const getKanban = async (req, res, next) => {
-  try {
-    const data = await service.getKanban(req.user.teamId);
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const getLeadGroups = async (req, res, next) => {
-  try {
-    const groups = await service.getLeadGroups(req.user.teamId);
-    res.json(groups);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const getLeaderboard = async (req, res, next) => {
-  try {
-    const fromDate = getLeaderboardDate(req.params.range);
-    const data = await service.getLeaderboard(req.user.teamId, fromDate);
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const getPerformance = async (req, res, next) => {
-  try {
-    const fromDate = getLeaderboardDate(req.params.range);
-
-    const scores = await getPerformanceScores(req.user.teamId, fromDate);
-
-    const finalData = applyBadgesAndLevels(scores);
-    res.json(finalData);
+    res.json({ success: true, lead: updatedLead });
   } catch (err) {
     next(err);
   }

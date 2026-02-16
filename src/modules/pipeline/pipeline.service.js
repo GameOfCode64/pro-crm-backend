@@ -1,10 +1,10 @@
 import prisma from "../../config/db.js";
 
 /**
- * Fetch pipeline data
+ * GET PIPELINE DATA
  */
 export const getPipelineData = async (teamId) => {
-  const activeOutcomes = await prisma.callOutcomeConfig.findMany({
+  const outcomes = await prisma.callOutcomeConfig.findMany({
     where: { teamId },
     include: {
       reasons: { orderBy: { createdAt: "asc" } },
@@ -14,30 +14,28 @@ export const getPipelineData = async (teamId) => {
 
   return {
     initialStage: ["FRESH"],
-    activeStage: activeOutcomes,
-    closedStage: ["WON", "LOST"],
+    activeStage: outcomes.filter((o) => o.stage === "ACTIVE"),
+    closedStage: outcomes.filter((o) => o.stage === "CLOSED"),
   };
 };
 
 /**
- * Create new custom outcome
+ * CREATE OUTCOME
  */
 export const createOutcomeService = async (teamId, payload) => {
-  const { name, stage, reasons = [] } = payload;
+  const { key, name, stage, color, reasons = [] } = payload;
 
-  if (!name || !name.trim()) {
-    throw new Error("Outcome name is required");
-  }
-
-  if (!stage) {
-    throw new Error("Stage is required");
+  if (!key || !name || !stage || !color) {
+    throw new Error("key, name, stage and color are required");
   }
 
   return prisma.callOutcomeConfig.create({
     data: {
       teamId,
+      key: key.trim(),
       name: name.trim(),
-      stage, // Add this required field
+      stage,
+      color,
       isSystem: false,
       reasons: {
         create: reasons.map((label) => ({ label: label.trim() })),
@@ -46,27 +44,23 @@ export const createOutcomeService = async (teamId, payload) => {
     include: { reasons: true },
   });
 };
+
 /**
- * Update outcome + replace reasons
+ * UPDATE OUTCOME
  */
-
 export const updateOutcomeService = async (teamId, outcomeId, payload) => {
-  const { name, reasons = [] } = payload;
+  const { name, color, reasons = [] } = payload;
 
-  const existing = await prisma.callOutcomeConfig.findUnique({
-    where: { id: outcomeId },
+  const existing = await prisma.callOutcomeConfig.findFirst({
+    where: { id: outcomeId, teamId },
   });
 
-  if (!existing || existing.teamId !== teamId) {
-    throw new Error("Outcome not found");
-  }
+  if (!existing) throw new Error("Outcome not found");
 
-  // 🔒 SYSTEM OUTCOMES CANNOT CHANGE ENUM / NAME
-  if (existing.isSystem && name !== existing.name) {
+  if (existing.isSystem && name && name !== existing.name) {
     throw new Error("System outcomes cannot be renamed");
   }
 
-  // 🔁 Replace reasons ONLY
   await prisma.callOutcomeReason.deleteMany({
     where: { outcomeId },
   });
@@ -75,6 +69,7 @@ export const updateOutcomeService = async (teamId, outcomeId, payload) => {
     where: { id: outcomeId },
     data: {
       name: name ?? existing.name,
+      color: color ?? existing.color,
       reasons: {
         create: reasons.map((label) => ({ label })),
       },
@@ -83,14 +78,15 @@ export const updateOutcomeService = async (teamId, outcomeId, payload) => {
   });
 };
 
+/**
+ * DELETE OUTCOME
+ */
 export const deleteOutcomeService = async (teamId, outcomeId) => {
   const outcome = await prisma.callOutcomeConfig.findFirst({
     where: { id: outcomeId, teamId },
   });
 
-  if (!outcome) {
-    throw new Error("Outcome not found");
-  }
+  if (!outcome) throw new Error("Outcome not found");
 
   if (outcome.isSystem) {
     throw new Error("Cannot delete system outcomes");
