@@ -10,14 +10,24 @@ const normalizePhoneNumber = (phone) => {
     return "";
   }
 
-  let phoneStr = String(phone);
+  // Force to string first and trim
+  let phoneStr = String(phone).trim();
+
+  // Remove all non-digit characters (spaces, dashes, parentheses, dots)
   phoneStr = phoneStr.replace(/[\s\-\(\)\.]/g, "");
 
   // Handle scientific notation (Excel quirk)
   if (phoneStr.includes("e") || phoneStr.includes("E")) {
-    const num = parseFloat(phoneStr);
-    phoneStr = num.toFixed(0);
+    try {
+      const num = parseFloat(phoneStr);
+      phoneStr = num.toFixed(0);
+    } catch (e) {
+      console.error("Error parsing scientific notation:", e);
+    }
   }
+
+  // Final cleanup - ensure only digits remain
+  phoneStr = phoneStr.replace(/\D/g, "");
 
   return phoneStr;
 };
@@ -59,7 +69,7 @@ const normalizeLeadData = (leadData) => {
   return {
     companyName: normalizeString(leadData.companyName),
     personName: normalizeString(leadData.personName),
-    phone: normalizePhoneNumber(leadData.phone),
+    phone: normalizePhoneNumber(leadData.phone), // Removed String() wrapper as it's handled in normalizePhoneNumber
     email: normalizeString(leadData.email),
     meta: normalizeMeta(leadData.meta),
   };
@@ -334,7 +344,7 @@ export const importLeadsService = async ({
     const rawLead = leads[i];
 
     try {
-      // Normalize data - THIS IS THE KEY FIX
+      // Normalize data
       const normalizedLead = normalizeLeadData(rawLead);
 
       // Validate data
@@ -367,12 +377,15 @@ export const importLeadsService = async ({
         continue;
       }
 
-      // Create lead - phone is already normalized to string
+      // CRITICAL FIX: Ensure phone is string before sending to Prisma
+      const phoneAsString = String(normalizedLead.phone);
+
+      // Create lead
       await prisma.lead.create({
         data: {
           companyName: normalizedLead.companyName,
           personName: normalizedLead.personName,
-          phone: normalizedLead.phone, // ✅ This is already a string from normalizeLeadData
+          phone: phoneAsString, // ✅ Explicitly converted to string
           email: normalizedLead.email,
           meta: normalizedLead.meta,
           teamId,
@@ -432,12 +445,16 @@ export const createLeadService = async ({
     throw new Error(`Lead with phone ${normalizedLead.phone} already exists`);
   }
 
+  // CRITICAL FIX: Ensure phone is string before sending to Prisma
+  const phoneAsString = String(normalizedLead.phone);
+  console.log(typeof phoneAsString, "the type of phone after conversion"); // Debug log
+
   // Create lead
   const lead = await prisma.lead.create({
     data: {
       companyName: normalizedLead.companyName,
       personName: normalizedLead.personName,
-      phone: normalizedLead.phone, // ✅ Already a string from normalizeLeadData
+      phone: phoneAsString, // ✅ Explicitly converted to string
       email: normalizedLead.email,
       meta: normalizedLead.meta,
       teamId,
@@ -452,15 +469,93 @@ export const createLeadService = async ({
         },
       },
     },
-    include: {
-      assignedTo: {
-        select: { id: true, name: true },
-      },
-      campaign: {
-        select: { id: true, name: true },
-      },
-    },
   });
 
   return lead;
+};
+
+/* ================= UPDATE LEAD ================= */
+
+export const updateLeadService = async ({ id, teamId, userId, leadData }) => {
+  // Check if lead exists and belongs to team
+  const existingLead = await prisma.lead.findFirst({
+    where: { id, teamId },
+  });
+
+  if (!existingLead) {
+    throw new Error("Lead not found");
+  }
+
+  // Normalize the update data
+  const updateData = {};
+
+  if (leadData.companyName !== undefined) {
+    updateData.companyName = normalizeString(leadData.companyName);
+  }
+
+  if (leadData.personName !== undefined) {
+    updateData.personName = normalizeString(leadData.personName);
+  }
+
+  if (leadData.phone !== undefined) {
+    // CRITICAL FIX: Ensure phone is string
+    updateData.phone = String(normalizePhoneNumber(leadData.phone));
+  }
+
+  if (leadData.email !== undefined) {
+    updateData.email = normalizeString(leadData.email);
+  }
+
+  if (leadData.status !== undefined) {
+    updateData.status = leadData.status;
+  }
+
+  if (leadData.assignedToId !== undefined) {
+    updateData.assignedToId = leadData.assignedToId;
+  }
+
+  if (leadData.meta !== undefined) {
+    updateData.meta = normalizeMeta(leadData.meta);
+  }
+
+  // Add activity for the update
+  const lead = await prisma.$transaction(async (tx) => {
+    const updated = await tx.lead.update({
+      where: { id },
+      data: updateData,
+    });
+
+    await tx.leadActivity.create({
+      data: {
+        leadId: id,
+        userId,
+        type: "REMARK",
+        remark: "Lead updated",
+      },
+    });
+
+    return updated;
+  });
+
+  return lead;
+};
+
+/* ================= DELETE LEAD ================= */
+
+export const deleteLeadService = async (id, teamId) => {
+  // Check if lead exists and belongs to team
+  const existingLead = await prisma.lead.findFirst({
+    where: { id, teamId },
+  });
+
+  if (!existingLead) {
+    throw new Error("Lead not found");
+  }
+
+  // Delete lead (cascade will delete activities)
+  await prisma.lead.delete({
+    where: { id },
+  });
+
+  return { success: true };
 };

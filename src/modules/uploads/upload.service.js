@@ -1,6 +1,83 @@
 import prisma from "../../config/db.js";
 import { parseUploadFile } from "./upload.utils.js";
 
+/* ================= UTILITY FUNCTIONS ================= */
+
+/**
+ * Normalize phone number to string format
+ */
+const normalizePhoneNumber = (phone) => {
+  if (phone === null || phone === undefined || phone === "") {
+    return "";
+  }
+
+  // Force to string first and trim
+  let phoneStr = String(phone).trim();
+
+  // Remove all non-digit characters (spaces, dashes, parentheses, dots)
+  phoneStr = phoneStr.replace(/[\s\-\(\)\.]/g, "");
+
+  // Handle scientific notation (Excel quirk)
+  if (phoneStr.includes("e") || phoneStr.includes("E")) {
+    try {
+      const num = parseFloat(phoneStr);
+      phoneStr = num.toFixed(0);
+    } catch (e) {
+      console.error("Error parsing scientific notation:", e);
+    }
+  }
+
+  // Final cleanup - ensure only digits remain
+  phoneStr = phoneStr.replace(/\D/g, "");
+
+  return phoneStr;
+};
+
+/**
+ * Normalize string field
+ */
+const normalizeString = (value) => {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value).trim();
+};
+
+/**
+ * Normalize meta object
+ */
+const normalizeMeta = (meta) => {
+  if (!meta || typeof meta !== "object") {
+    return {};
+  }
+
+  const normalized = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (value === null || value === undefined) {
+      normalized[key] = "";
+      continue;
+    }
+    normalized[key] = String(value).trim();
+  }
+
+  return normalized;
+};
+
+/**
+ * Normalize lead data from upload
+ */
+const normalizeUploadLeadData = (leadData, meta) => {
+  return {
+    personName: normalizeString(leadData.personName),
+    companyName: normalizeString(leadData.companyName),
+    phone: normalizePhoneNumber(leadData.phone), // CRITICAL: Normalize phone
+    email: normalizeString(leadData.email),
+    meta: normalizeMeta(meta),
+  };
+};
+
+/* ================= UPLOAD SERVICE FUNCTIONS ================= */
+
 /**
  * Create upload session
  */
@@ -64,8 +141,14 @@ export const saveDuplicateRulesService = async (uploadId, field, action) => {
   let duplicates = 0;
 
   for (const row of rows) {
-    const value = String(row[field] ?? "");
-    if (existingValues.has(value)) duplicates++;
+    // Normalize the value for comparison
+    const rawValue = row[field];
+    const normalizedValue =
+      field === "phone"
+        ? normalizePhoneNumber(rawValue)
+        : normalizeString(rawValue);
+
+    if (existingValues.has(normalizedValue)) duplicates++;
   }
 
   const stats = {
@@ -111,8 +194,7 @@ export const assignCampaignService = async (uploadId, body, user) => {
 
 /**
  * Confirm upload → CREATE LEADS
- **/
-
+ */
 export const confirmUploadService = async (uploadId, user) => {
   const upload = await prisma.uploadSession.findUnique({
     where: { id: uploadId },
@@ -127,60 +209,131 @@ export const confirmUploadService = async (uploadId, user) => {
   const { rows } = await parseUploadFile(upload.filePath);
 
   let created = 0;
+  let skipped = 0;
+  const errors = [];
 
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     const leadData = {};
     const meta = {};
 
-    // 🔥 APPLY MAPPINGS PROPERLY
-    for (const mapping of upload.mappings) {
-      const excelColumn = mapping.excelColumn;
-      const targetField = mapping.targetField;
+    try {
+      // APPLY MAPPINGS PROPERLY
+      for (const mapping of upload.mappings) {
+        const excelColumn = mapping.excelColumn;
+        const targetField = mapping.targetField;
+        const value = row[excelColumn];
 
-      const value = row[excelColumn];
+        if (!targetField) continue;
 
-      if (!targetField) continue;
-
-      // Core fields
-      if (
-        ["personName", "phone", "companyName", "email"].includes(targetField)
-      ) {
-        leadData[targetField] = value ?? "";
+        // Core fields
+        if (targetField === "personName") {
+          leadData.personName = value;
+        } else if (targetField === "companyName") {
+          leadData.companyName = value;
+        } else if (targetField === "phone") {
+          leadData.phone = value; // Will be normalized later
+        } else if (targetField === "email") {
+          leadData.email = value;
+        }
+        // Custom fields
+        else if (targetField.startsWith("meta.")) {
+          const key = targetField.replace("meta.", "");
+          meta[key] = value ?? "";
+        }
       }
 
-      // Custom fields
-      else if (targetField.startsWith("meta.")) {
-        const key = targetField.replace("meta.", "");
-        meta[key] = value ?? "";
+      // Skip if no phone number
+      if (!leadData.phone && !leadData.phone === "") {
+        skipped++;
+        errors.push({
+          row: i + 2,
+          error: "Phone number is required",
+          data: row,
+        });
+        continue;
       }
-    }
 
-    if (!leadData.phone) continue;
+      // NORMALIZE THE LEAD DATA (CRITICAL FIX)
+      const normalizedLead = normalizeUploadLeadData(leadData, meta);
 
-    await prisma.lead.create({
-      data: {
-        ...leadData,
-        meta,
-        teamId: upload.teamId,
-        campaignId: upload.campaignId,
-        status: "FRESH",
-        activities: {
-          create: {
-            userId: user.id,
-            type: "REMARK",
-            remark: "Imported via Excel",
+      // Check for duplicates if rule exists
+      if (upload.duplicateRules && upload.duplicateRules.length > 0) {
+        const rule = upload.duplicateRules[0];
+        if (rule.field === "phone") {
+          const existing = await prisma.lead.findFirst({
+            where: {
+              phone: normalizedLead.phone,
+              teamId: upload.teamId,
+            },
+          });
+
+          if (existing) {
+            if (rule.action === "SKIP") {
+              skipped++;
+              errors.push({
+                row: i + 2,
+                error: `Duplicate phone number: ${normalizedLead.phone}`,
+                data: row,
+              });
+              continue;
+            }
+            // If action is "UPDATE" or something else, you can handle here
+          }
+        }
+      }
+
+      // Create lead with normalized data
+      await prisma.lead.create({
+        data: {
+          personName: normalizedLead.personName || null,
+          companyName: normalizedLead.companyName || null,
+          phone: normalizedLead.phone, // ✅ This is now guaranteed to be a string
+          email: normalizedLead.email || null,
+          meta: normalizedLead.meta,
+          teamId: upload.teamId,
+          campaignId: upload.campaignId,
+          status: "FRESH",
+          activities: {
+            create: {
+              userId: user.id,
+              type: "REMARK",
+              remark: "Imported via Excel",
+            },
           },
         },
-      },
-    });
+      });
 
-    created++;
+      created++;
+    } catch (error) {
+      console.error(`Error creating lead from row ${i + 2}:`, error);
+      errors.push({
+        row: i + 2,
+        error: error.message,
+        data: row,
+      });
+      skipped++;
+    }
   }
 
+  // Update upload session with results
   await prisma.uploadSession.update({
     where: { id: uploadId },
-    data: { status: "COMPLETED" },
+    data: {
+      status: "COMPLETED",
+      stats: {
+        totalRows: rows.length,
+        created,
+        skipped,
+        errors: errors.length > 0 ? errors : undefined,
+      },
+    },
   });
 
-  return { created };
+  return {
+    created,
+    skipped,
+    totalRows: rows.length,
+    errors: errors.length > 0 ? errors : undefined,
+  };
 };
