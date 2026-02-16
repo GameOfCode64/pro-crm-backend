@@ -334,7 +334,7 @@ export const importLeadsService = async ({
     const rawLead = leads[i];
 
     try {
-      // Normalize data
+      // Normalize data - THIS IS THE KEY FIX
       const normalizedLead = normalizeLeadData(rawLead);
 
       // Validate data
@@ -342,7 +342,7 @@ export const importLeadsService = async ({
       if (!validation.isValid) {
         results.skipped++;
         results.errors.push({
-          row: i + 2, // +2 because Excel rows start at 1 and we skip header
+          row: i + 2,
           data: rawLead,
           errors: validation.errors,
         });
@@ -367,12 +367,12 @@ export const importLeadsService = async ({
         continue;
       }
 
-      // Create lead
+      // Create lead - phone is already normalized to string
       await prisma.lead.create({
         data: {
           companyName: normalizedLead.companyName,
           personName: normalizedLead.personName,
-          phone: normalizedLead.phone,
+          phone: normalizedLead.phone, // ✅ This is already a string from normalizeLeadData
           email: normalizedLead.email,
           meta: normalizedLead.meta,
           teamId,
@@ -396,6 +396,7 @@ export const importLeadsService = async ({
         data: rawLead,
         errors: [error.message],
       });
+      console.error(`Error importing lead at row ${i + 2}:`, error);
     }
   }
 
@@ -436,7 +437,7 @@ export const createLeadService = async ({
     data: {
       companyName: normalizedLead.companyName,
       personName: normalizedLead.personName,
-      phone: normalizedLead.phone,
+      phone: normalizedLead.phone, // ✅ Already a string from normalizeLeadData
       email: normalizedLead.email,
       meta: normalizedLead.meta,
       teamId,
