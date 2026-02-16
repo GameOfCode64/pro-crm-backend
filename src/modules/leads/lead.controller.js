@@ -3,6 +3,8 @@ import {
   getLeadsListService,
   getLeadByIdService,
   assignLeadsService,
+  importLeadsService,
+  createLeadService,
 } from "./lead.service.js";
 
 /* ================= GET LEADS ================= */
@@ -40,6 +42,59 @@ export const getLeadById = async (req, res, next) => {
   try {
     const lead = await getLeadByIdService(req.params.id, req.user.teamId);
     res.json(lead);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ================= CREATE SINGLE LEAD ================= */
+
+export const createLead = async (req, res, next) => {
+  try {
+    const lead = await createLeadService({
+      userId: req.user.id,
+      teamId: req.user.teamId,
+      campaignId: req.body.campaignId,
+      leadData: req.body,
+    });
+
+    res.status(201).json({
+      message: "Lead created successfully",
+      lead,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ================= IMPORT LEADS FROM EXCEL ================= */
+
+export const importLeads = async (req, res, next) => {
+  try {
+    const { leads, campaignId } = req.body;
+
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ error: "No leads provided" });
+    }
+
+    if (!campaignId) {
+      return res.status(400).json({ error: "Campaign ID is required" });
+    }
+
+    const results = await importLeadsService({
+      userId: req.user.id,
+      teamId: req.user.teamId,
+      campaignId,
+      leads,
+    });
+
+    // Return response based on results
+    const statusCode = results.success > 0 ? 200 : 400;
+
+    res.status(statusCode).json({
+      message: `Import completed. ${results.success} leads imported successfully, ${results.duplicates} duplicates found, ${results.skipped} skipped, ${results.failed} failed.`,
+      results,
+    });
   } catch (err) {
     next(err);
   }
@@ -234,8 +289,6 @@ export const assignLeads = async (req, res, next) => {
   }
 };
 
-// Add these to your lead.controller.js
-
 /* ================= GET LEAD ACTIVITIES ================= */
 
 export const getLeadActivities = async (req, res, next) => {
@@ -246,7 +299,7 @@ export const getLeadActivities = async (req, res, next) => {
       where: {
         leadId: id,
         lead: {
-          teamId: req.user.teamId, // Verify lead belongs to user's team
+          teamId: req.user.teamId,
         },
       },
       include: {
@@ -292,7 +345,7 @@ export const getLeadForms = async (req, res, next) => {
       where: {
         leadId: id,
         lead: {
-          teamId: req.user.teamId, // Verify lead belongs to user's team
+          teamId: req.user.teamId,
         },
       },
       include: {
@@ -301,6 +354,7 @@ export const getLeadForms = async (req, res, next) => {
             id: true,
             name: true,
             description: true,
+            schema: true,
           },
         },
         user: {
@@ -321,8 +375,6 @@ export const getLeadForms = async (req, res, next) => {
   }
 };
 
-// Add this to your lead.controller.js
-
 /* ================= GET MY LEADS (FOR EMPLOYEES/CALLERS) ================= */
 
 export const getMyLeads = async (req, res, next) => {
@@ -335,7 +387,6 @@ export const getMyLeads = async (req, res, next) => {
       where: {
         assignedToId: userId,
         teamId: req.user.teamId,
-        // Exclude won/lost leads from main list
         status: {
           notIn: ["WON", "LOST"],
         },
@@ -370,10 +421,7 @@ export const getMyLeads = async (req, res, next) => {
           take: 1,
         },
       },
-      orderBy: [
-        { followUpAt: "asc" }, // Prioritize follow-ups
-        { createdAt: "asc" }, // Then oldest first
-      ],
+      orderBy: [{ followUpAt: "asc" }, { createdAt: "asc" }],
     });
 
     // Add computed fields
@@ -457,6 +505,38 @@ export const completeLead = async (req, res, next) => {
     }
 
     res.json({ success: true, lead: updatedLead });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ================= DELETE LEAD ================= */
+
+export const deleteLead = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Verify lead belongs to team
+    const lead = await prisma.lead.findFirst({
+      where: {
+        id,
+        teamId: req.user.teamId,
+      },
+    });
+
+    if (!lead) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    // Delete lead (cascade will handle activities and forms)
+    await prisma.lead.delete({
+      where: { id },
+    });
+
+    res.json({
+      success: true,
+      message: "Lead deleted successfully",
+    });
   } catch (err) {
     next(err);
   }

@@ -1,5 +1,98 @@
 import prisma from "../../config/db.js";
 
+/* ================= UTILITY FUNCTIONS ================= */
+
+/**
+ * Normalize phone number to string format
+ */
+const normalizePhoneNumber = (phone) => {
+  if (phone === null || phone === undefined || phone === "") {
+    return "";
+  }
+
+  let phoneStr = String(phone);
+  phoneStr = phoneStr.replace(/[\s\-\(\)\.]/g, "");
+
+  // Handle scientific notation (Excel quirk)
+  if (phoneStr.includes("e") || phoneStr.includes("E")) {
+    const num = parseFloat(phoneStr);
+    phoneStr = num.toFixed(0);
+  }
+
+  return phoneStr;
+};
+
+/**
+ * Normalize string field
+ */
+const normalizeString = (value) => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return String(value).trim();
+};
+
+/**
+ * Normalize meta object
+ */
+const normalizeMeta = (meta) => {
+  if (!meta || typeof meta !== "object") {
+    return {};
+  }
+
+  const normalized = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (value === null || value === undefined) {
+      normalized[key] = "";
+      continue;
+    }
+    normalized[key] = String(value).trim();
+  }
+
+  return normalized;
+};
+
+/**
+ * Normalize entire lead object
+ */
+const normalizeLeadData = (leadData) => {
+  return {
+    companyName: normalizeString(leadData.companyName),
+    personName: normalizeString(leadData.personName),
+    phone: normalizePhoneNumber(leadData.phone),
+    email: normalizeString(leadData.email),
+    meta: normalizeMeta(leadData.meta),
+  };
+};
+
+/**
+ * Validate lead data
+ */
+const validateLeadData = (leadData) => {
+  const errors = [];
+
+  // Phone is required
+  if (!leadData.phone || leadData.phone === "") {
+    errors.push("Phone number is required");
+  }
+
+  // Phone format validation
+  const phone = leadData.phone;
+  if (phone && !/^\d{10,15}$/.test(phone)) {
+    errors.push(`Invalid phone format: ${phone} (must be 10-15 digits)`);
+  }
+
+  // At least one name field
+  if (!leadData.personName && !leadData.companyName) {
+    errors.push("Either person name or company name is required");
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+  };
+};
+
 /* ================= GET LEADS ================= */
 
 export const getLeadsListService = async ({
@@ -105,7 +198,7 @@ export const assignLeadsService = async ({
       id: { in: leadIds },
       teamId: manager.teamId,
     },
-    orderBy: { createdAt: "asc" }, // Consistent order
+    orderBy: { createdAt: "asc" },
   });
 
   if (!leads.length) {
@@ -211,4 +304,162 @@ export const assignLeadsService = async ({
     assigned: assignments.length,
     distribution,
   };
+};
+
+/* ================= IMPORT LEADS FROM EXCEL ================= */
+
+export const importLeadsService = async ({
+  userId,
+  teamId,
+  campaignId,
+  leads,
+}) => {
+  if (!leads || !Array.isArray(leads) || leads.length === 0) {
+    throw new Error("No leads provided");
+  }
+
+  if (!campaignId) {
+    throw new Error("Campaign ID is required");
+  }
+
+  const results = {
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    duplicates: 0,
+    errors: [],
+  };
+
+  for (let i = 0; i < leads.length; i++) {
+    const rawLead = leads[i];
+
+    try {
+      // Normalize data
+      const normalizedLead = normalizeLeadData(rawLead);
+
+      // Validate data
+      const validation = validateLeadData(normalizedLead);
+      if (!validation.isValid) {
+        results.skipped++;
+        results.errors.push({
+          row: i + 2, // +2 because Excel rows start at 1 and we skip header
+          data: rawLead,
+          errors: validation.errors,
+        });
+        continue;
+      }
+
+      // Check for duplicates
+      const existing = await prisma.lead.findFirst({
+        where: {
+          phone: normalizedLead.phone,
+          teamId,
+        },
+      });
+
+      if (existing) {
+        results.duplicates++;
+        results.errors.push({
+          row: i + 2,
+          data: rawLead,
+          errors: [`Duplicate phone number: ${normalizedLead.phone}`],
+        });
+        continue;
+      }
+
+      // Create lead
+      await prisma.lead.create({
+        data: {
+          companyName: normalizedLead.companyName,
+          personName: normalizedLead.personName,
+          phone: normalizedLead.phone,
+          email: normalizedLead.email,
+          meta: normalizedLead.meta,
+          teamId,
+          campaignId,
+          status: "FRESH",
+          activities: {
+            create: {
+              userId,
+              type: "REMARK",
+              remark: "Imported via Excel",
+            },
+          },
+        },
+      });
+
+      results.success++;
+    } catch (error) {
+      results.failed++;
+      results.errors.push({
+        row: i + 2,
+        data: rawLead,
+        errors: [error.message],
+      });
+    }
+  }
+
+  return results;
+};
+
+/* ================= CREATE SINGLE LEAD ================= */
+
+export const createLeadService = async ({
+  userId,
+  teamId,
+  campaignId,
+  leadData,
+}) => {
+  // Normalize data
+  const normalizedLead = normalizeLeadData(leadData);
+
+  // Validate data
+  const validation = validateLeadData(normalizedLead);
+  if (!validation.isValid) {
+    throw new Error(validation.errors.join(", "));
+  }
+
+  // Check for duplicates
+  const existing = await prisma.lead.findFirst({
+    where: {
+      phone: normalizedLead.phone,
+      teamId,
+    },
+  });
+
+  if (existing) {
+    throw new Error(`Lead with phone ${normalizedLead.phone} already exists`);
+  }
+
+  // Create lead
+  const lead = await prisma.lead.create({
+    data: {
+      companyName: normalizedLead.companyName,
+      personName: normalizedLead.personName,
+      phone: normalizedLead.phone,
+      email: normalizedLead.email,
+      meta: normalizedLead.meta,
+      teamId,
+      campaignId,
+      status: leadData.status || "FRESH",
+      assignedToId: leadData.assignedToId || null,
+      activities: {
+        create: {
+          userId,
+          type: "REMARK",
+          remark: leadData.remark || "Lead created",
+        },
+      },
+    },
+    include: {
+      assignedTo: {
+        select: { id: true, name: true },
+      },
+      campaign: {
+        select: { id: true, name: true },
+      },
+    },
+  });
+
+  return lead;
 };
