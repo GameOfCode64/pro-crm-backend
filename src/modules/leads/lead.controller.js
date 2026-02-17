@@ -204,29 +204,39 @@ export const bulkUpdateCampaign = async (req, res, next) => {
       employeeDistribution,
     } = req.body;
 
+    console.log("bulkUpdateCampaign called with:", {
+      campaignId,
+      limit,
+      offset,
+      status,
+      employeeDistribution,
+    });
+
     if (!campaignId) {
       return res.status(400).json({ error: "Campaign ID is required" });
     }
 
-    // Fetch leads from campaign with offset and limit
+    // ─────────────────────────────────────────────────────────────
+    // STEP 1: Fetch lead IDs from campaign (ONE query)
+    // ─────────────────────────────────────────────────────────────
     const leads = await prisma.lead.findMany({
-      where: {
-        campaignId,
-        teamId: req.user.teamId,
-      },
+      where: { campaignId, teamId: req.user.teamId },
       skip: offset,
       take: limit || 999999,
       select: { id: true },
       orderBy: { createdAt: "asc" },
     });
 
-    if (leads.length === 0) {
+    if (!leads.length) {
       return res.status(404).json({ error: "No leads found in campaign" });
     }
 
     const leadIds = leads.map((l) => l.id);
+    const totalLeads = leadIds.length;
 
-    // If no employee distribution, just update status
+    // ─────────────────────────────────────────────────────────────
+    // CASE A: Status update only — no employee distribution
+    // ─────────────────────────────────────────────────────────────
     if (!employeeDistribution || employeeDistribution.length === 0) {
       if (!status) {
         return res.status(400).json({
@@ -242,30 +252,129 @@ export const bulkUpdateCampaign = async (req, res, next) => {
       return res.json({
         success: true,
         message: "Leads status updated successfully",
-        updated: leadIds.length,
+        totalLeads,
+        updated: totalLeads,
+        assigned: 0,
+        distribution: [],
       });
     }
 
-    // If employee distribution exists, assign leads
-    const employees = employeeDistribution.map((emp) => ({
+    // ─────────────────────────────────────────────────────────────
+    // CASE B: Assign to employees with distribution
+    // ─────────────────────────────────────────────────────────────
+
+    // Validate employees in ONE query
+    const users = await prisma.user.findMany({
+      where: {
+        id: { in: employeeDistribution.map((e) => e.employeeId) },
+        role: "EMPLOYEE",
+        teamId: req.user.teamId,
+        isActive: true,
+      },
+      select: { id: true, name: true },
+    });
+
+    if (!users.length) {
+      return res.status(400).json({ error: "No valid employees found" });
+    }
+
+    const validEmployeeIds = new Set(users.map((u) => u.id));
+    const validEmployees = employeeDistribution.filter((e) =>
+      validEmployeeIds.has(e.employeeId),
+    );
+
+    if (!validEmployees.length) {
+      return res.status(400).json({ error: "No valid employees found" });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // STEP 2: Calculate assignments in memory (0 DB calls)
+    // ─────────────────────────────────────────────────────────────
+    const assignments = [];
+    let leadIndex = 0;
+
+    const hasPercentages = validEmployees.some(
+      (e) => e.percentage != null && e.percentage > 0,
+    );
+
+    if (hasPercentages) {
+      for (const emp of validEmployees) {
+        const percent = emp.percentage ?? 0;
+        const count = Math.round((percent / 100) * totalLeads);
+        for (let i = 0; i < count && leadIndex < totalLeads; i++) {
+          assignments.push({
+            leadId: leadIds[leadIndex++],
+            employeeId: emp.employeeId,
+          });
+        }
+      }
+    }
+
+    // Fill remaining with round-robin
+    let rr = 0;
+    while (leadIndex < totalLeads) {
+      assignments.push({
+        leadId: leadIds[leadIndex],
+        employeeId: validEmployees[rr % validEmployees.length].employeeId,
+      });
+      leadIndex++;
+      rr++;
+    }
+
+    const finalStatus = status || "ASSIGNED";
+
+    // ─────────────────────────────────────────────────────────────
+    // STEP 3: ONE updateMany per employee (NOT one per lead)
+    // ─────────────────────────────────────────────────────────────
+    const byEmployee = new Map();
+    for (const a of assignments) {
+      if (!byEmployee.has(a.employeeId)) byEmployee.set(a.employeeId, []);
+      byEmployee.get(a.employeeId).push(a.leadId);
+    }
+
+    await Promise.all(
+      [...byEmployee.entries()].map(([employeeId, ids]) =>
+        prisma.lead.updateMany({
+          where: { id: { in: ids } },
+          data: {
+            assignedToId: employeeId,
+            status: finalStatus,
+          },
+        }),
+      ),
+    );
+
+    // ─────────────────────────────────────────────────────────────
+    // STEP 4: ONE bulk insert for all activities
+    // ─────────────────────────────────────────────────────────────
+    await prisma.leadActivity.createMany({
+      data: assignments.map((a) => ({
+        leadId: a.leadId,
+        userId: req.user.id,
+        type: "ASSIGNED",
+        remark: "Lead assigned",
+      })),
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // STEP 5: Return distribution summary
+    // ─────────────────────────────────────────────────────────────
+    const distribution = validEmployees.map((emp) => ({
       employeeId: emp.employeeId,
+      employeeName: users.find((u) => u.id === emp.employeeId)?.name,
+      count: byEmployee.get(emp.employeeId)?.length ?? 0,
       percentage: emp.percentage,
     }));
 
-    const result = await assignLeadsService({
-      manager: req.user,
-      leadIds,
-      employees,
-      statusOverride: status,
-    });
-
-    res.json({
+    return res.json({
       success: true,
       message: "Leads assigned successfully",
-      ...result,
+      totalLeads,
+      assigned: assignments.length,
+      distribution,
     });
   } catch (err) {
-    console.error("Bulk update campaign error:", err);
+    console.error("bulkUpdateCampaign error:", err);
     next(err);
   }
 };
