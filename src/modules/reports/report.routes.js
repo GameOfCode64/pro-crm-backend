@@ -5,6 +5,7 @@ import {
   exportAttendance,
   exportLeads,
   previewLeads,
+  getMyCallingReportController,
 } from "./report.controller.js";
 
 const router = express.Router();
@@ -16,5 +17,7 @@ router.post("/leads/preview", auth, role("MANAGER"), previewLeads);
 
 // Updated: Export endpoint
 router.post("/leads/export", auth, role("MANAGER"), exportLeads);
+
+router.get("/my-calls", auth, role("EMPLOYEE"), getMyCallingReportController);
 
 export default router;

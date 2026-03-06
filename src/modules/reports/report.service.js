@@ -175,3 +175,151 @@ export const getLeadsExportData = async ({
     })
     .filter(Boolean);
 };
+
+export const getMyCallingReportService = async ({
+  userId,
+  teamId,
+  from,
+  to,
+  period = "DAY",
+}) => {
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+
+  /* ── 1. All CALL activities by this user in range ── */
+  const activities = await prisma.leadActivity.findMany({
+    where: {
+      userId,
+      type: "CALL",
+      createdAt: { gte: fromDate, lte: toDate },
+      lead: { teamId }, // security: only own team's leads
+    },
+    include: {
+      lead: {
+        include: {
+          assignedTo: { select: { id: true, name: true } },
+          campaign: { select: { id: true, name: true } },
+        },
+      },
+      outcome: { select: { id: true, name: true, color: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  /* ── 2. Aggregate totals ── */
+  const totalCalls = activities.length;
+  const totalDuration = activities.reduce((sum, a) => {
+    // duration stored as "2m 30s" or seconds integer — handle both
+    if (!a.duration) return sum;
+    if (typeof a.duration === "number") return sum + a.duration;
+    // parse "Xm Ys" format
+    const mMatch = String(a.duration).match(/(\d+)m/);
+    const sMatch = String(a.duration).match(/(\d+)s/);
+    return (
+      sum +
+      (mMatch ? parseInt(mMatch[1]) * 60 : 0) +
+      (sMatch ? parseInt(sMatch[1]) : 0)
+    );
+  }, 0);
+
+  // Sales = sum of contractAmount from lead meta (if present)
+  const seenLeadIds = new Set();
+  let totalSales = 0;
+  for (const a of activities) {
+    if (!seenLeadIds.has(a.leadId) && a.lead?.meta?.contractAmount) {
+      const amount = parseFloat(
+        String(a.lead.meta.contractAmount).replace(/[^\d.]/g, ""),
+      );
+      if (!isNaN(amount)) totalSales += amount;
+      seenLeadIds.add(a.leadId);
+    }
+  }
+
+  /* ── 3. Chart data — bucket by period ── */
+  const chartData = buildChartBuckets(activities, fromDate, toDate, period);
+
+  /* ── 4. Unique leads (most recent activity first) ── */
+  const leadMap = new Map();
+  for (const a of activities) {
+    if (!leadMap.has(a.leadId)) {
+      leadMap.set(a.leadId, a.lead);
+    }
+  }
+  const leads = Array.from(leadMap.values());
+
+  return { totalCalls, totalDuration, totalSales, chartData, leads };
+};
+
+/* ── Chart bucket builder ── */
+function buildChartBuckets(activities, from, to, period) {
+  if (period === "DAY") {
+    // Bucket by hour  → "12 AM", "02 AM" … "10 PM"
+    const hours = {};
+    for (let h = 0; h < 24; h += 2) {
+      const label = formatHourLabel(h);
+      hours[label] = 0;
+    }
+    for (const a of activities) {
+      const h = new Date(a.createdAt).getHours();
+      const bucket = Math.floor(h / 2) * 2;
+      const label = formatHourLabel(bucket);
+      if (label in hours) hours[label]++;
+    }
+    return Object.entries(hours).map(([label, calls]) => ({ label, calls }));
+  }
+
+  if (period === "WEEK") {
+    // Bucket by day of week
+    const days = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    for (const a of activities) {
+      const d = dayNames[new Date(a.createdAt).getDay()];
+      if (d in days) days[d]++;
+    }
+    return Object.entries(days).map(([label, calls]) => ({ label, calls }));
+  }
+
+  if (period === "MONTH") {
+    // Bucket by week-of-month  → "W1" … "W5"
+    const weeks = { W1: 0, W2: 0, W3: 0, W4: 0, W5: 0 };
+    for (const a of activities) {
+      const day = new Date(a.createdAt).getDate();
+      const week = `W${Math.ceil(day / 7)}`;
+      if (week in weeks) weeks[week]++;
+    }
+    return Object.entries(weeks).map(([label, calls]) => ({ label, calls }));
+  }
+
+  if (period === "YEAR") {
+    // Bucket by month
+    const months = {
+      Jan: 0,
+      Feb: 0,
+      Mar: 0,
+      Apr: 0,
+      May: 0,
+      Jun: 0,
+      Jul: 0,
+      Aug: 0,
+      Sep: 0,
+      Oct: 0,
+      Nov: 0,
+      Dec: 0,
+    };
+    const monthNames = Object.keys(months);
+    for (const a of activities) {
+      const m = monthNames[new Date(a.createdAt).getMonth()];
+      months[m]++;
+    }
+    return Object.entries(months).map(([label, calls]) => ({ label, calls }));
+  }
+
+  return [];
+}
+
+function formatHourLabel(h) {
+  if (h === 0) return "12 AM";
+  if (h < 12) return `${String(h).padStart(2, "0")} AM`;
+  if (h === 12) return "12 PM";
+  return `${String(h - 12).padStart(2, "0")} PM`;
+}

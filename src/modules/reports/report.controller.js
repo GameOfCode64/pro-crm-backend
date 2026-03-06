@@ -3,7 +3,11 @@ import {
   buildLeadsWorkbook,
 } from "./reports.excel.js";
 
-import { getAttendanceData, getLeadsExportData } from "./report.service.js";
+import {
+  getAttendanceData,
+  getLeadsExportData,
+  getMyCallingReportService,
+} from "./report.service.js";
 
 export const exportAttendance = async (req, res, next) => {
   try {
@@ -100,5 +104,30 @@ export const exportLeads = async (req, res, next) => {
     res.end();
   } catch (err) {
     next(err);
+  }
+};
+
+export const getMyCallingReportController = async (req, res) => {
+  try {
+    const { from, to, period = "DAY" } = req.query;
+
+    if (!from || !to) {
+      return res
+        .status(400)
+        .json({ error: "from and to query params are required" });
+    }
+
+    const data = await getMyCallingReportService({
+      userId: req.user.id,
+      teamId: req.user.teamId,
+      from,
+      to,
+      period,
+    });
+
+    return res.json(data);
+  } catch (error) {
+    console.error("getMyCallingReportController error:", error);
+    return res.status(500).json({ error: "Failed to fetch calling report" });
   }
 };
