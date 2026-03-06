@@ -13,8 +13,9 @@ import {
   bulkUpdateSelected,
   getLeadActivities,
   getLeadForms,
-  getMyLeads, // NEW
-  completeLead, // NEW
+  getMyLeads,
+  completeLead,
+  searchLeadsController,
 } from "./lead.controller.js";
 
 const router = express.Router();
@@ -28,6 +29,12 @@ router.post("/complete", auth, role("EMPLOYEE"), completeLead);
 
 router.get("/", auth, role("MANAGER"), getLeadsList);
 router.get("/count", auth, role("MANAGER"), countCampaignLeads);
+router.get(
+  "/search",
+  auth,
+  role("MANAGER", "EMPLOYEE"), // both roles can search
+  searchLeadsController,
+);
 router.get("/:id", auth, role("MANAGER", "EMPLOYEE"), getLeadById);
 
 /* ================= LEAD ACTIVITIES & FORMS ================= */

@@ -82,6 +82,9 @@ model User {
   assignedLeads  Lead[]         @relation("UserAssignedLeads")
   leadActivities LeadActivity[] @relation("UserLeadActivities")
 
+  // ← NEW: reverse relation for activities where this user is the assignee
+  assignedActivities LeadActivity[] @relation("ActivityAssignee")
+
   attendance Attendance[]
   auditLogs  AuditLog[]
 
@@ -174,9 +177,9 @@ model CallOutcomeConfig {
   id     String @id @default(uuid())
   teamId String
 
-  key   String // INTERNAL (e.g. INTERESTED)
-  name  String // DISPLAY (e.g. Interested)
-  color String // HEX color for UI
+  key   String
+  name  String
+  color String
   stage PipelineStage
 
   isSystem Boolean @default(false)
@@ -215,9 +218,6 @@ model Lead {
   personName  String
   phone       String
 
-  /**
-   * PIPELINE STATUS KEY
-   */
   status String
 
   followUpAt DateTime?
@@ -271,6 +271,10 @@ model LeadActivity {
 
   remark String?
 
+  // ← NEW: who was assigned TO (only populated for ASSIGNED type)
+  assigneeId String?
+  assignee   User?   @relation("ActivityAssignee", fields: [assigneeId], references: [id])
+
   createdAt DateTime @default(now())
 
   lead Lead @relation(fields: [leadId], references: [id])
@@ -279,6 +283,7 @@ model LeadActivity {
   @@index([leadId])
   @@index([userId])
   @@index([outcomeId])
+  @@index([assigneeId])
 }
 
 /**
@@ -344,7 +349,6 @@ model UploadSession {
   campaignId String?
   campaign   Campaign? @relation(fields: [campaignId], references: [id])
 
-  // ✅ ADD THIS
   stats Json?
 
   mappings       UploadFieldMapping[]
@@ -364,7 +368,7 @@ model UploadFieldMapping {
   upload   UploadSession @relation(fields: [uploadId], references: [id])
 
   excelColumn String
-  targetField String // phone | personName | companyName | meta.custom_x
+  targetField String
 
   createdAt DateTime @default(now())
 }

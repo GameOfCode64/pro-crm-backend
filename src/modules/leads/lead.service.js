@@ -37,7 +37,6 @@ const normalizeMeta = (meta) => {
   return normalized;
 };
 
-// email is NOT in Lead schema — intentionally excluded
 const normalizeLeadData = (leadData) => {
   return {
     companyName: normalizeString(leadData.companyName),
@@ -124,6 +123,32 @@ export const getLeadByIdService = async (id, teamId) => {
   return lead;
 };
 
+/* ================= GET LEAD ACTIVITIES ================= */
+
+export const getLeadActivitiesService = async (leadId, teamId) => {
+  // Verify lead belongs to team
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, teamId },
+    select: { id: true },
+  });
+
+  if (!lead) throw new Error("Lead not found");
+
+  const activities = await prisma.leadActivity.findMany({
+    where: { leadId },
+    include: {
+      user: { select: { id: true, name: true } },
+      // ← NEW: include assignee so frontend can show "assigned by X → Y"
+      assignee: { select: { id: true, name: true } },
+      outcome: { select: { id: true, name: true, color: true } },
+      outcomeReason: { select: { id: true, label: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return activities;
+};
+
 /* ================= ASSIGN LEADS ================= */
 
 export const assignLeadsService = async ({
@@ -204,7 +229,8 @@ export const assignLeadsService = async ({
           leadId: a.leadId,
           userId: manager.id,
           type: "ASSIGNED",
-          remark: `Lead assigned`,
+          remark: "Lead assigned",
+          assigneeId: a.employeeId, // ← NEW: store who was assigned TO
         },
       }),
     ]),
@@ -226,7 +252,7 @@ export const assignLeadsService = async ({
   };
 };
 
-/* ================= IMPORT LEADS (OPTIMIZED — was 10-20 min, now <10s) ================= */
+/* ================= IMPORT LEADS ================= */
 
 export const importLeadsService = async ({
   userId,
@@ -247,9 +273,6 @@ export const importLeadsService = async ({
     errors: [],
   };
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 1: Normalize + validate ALL rows in memory (0 DB calls)
-  // ─────────────────────────────────────────────────────────────
   const validLeads = [];
 
   for (let i = 0; i < leads.length; i++) {
@@ -271,11 +294,6 @@ export const importLeadsService = async ({
 
   if (validLeads.length === 0) return results;
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 2: ONE query to find all duplicates in DB
-  //         Was: 1 query × N leads = N queries
-  //         Now: 1 query total
-  // ─────────────────────────────────────────────────────────────
   const allPhones = validLeads.map((l) => l.phone);
 
   const existingLeads = await prisma.lead.findMany({
@@ -285,14 +303,10 @@ export const importLeadsService = async ({
 
   const existingPhones = new Set(existingLeads.map((l) => l.phone));
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 3: Filter duplicates in memory (0 DB calls)
-  // ─────────────────────────────────────────────────────────────
   const seenInBatch = new Set();
   const newLeads = [];
 
   for (const lead of validLeads) {
-    // Duplicate in DB
     if (existingPhones.has(lead.phone)) {
       results.duplicates++;
       results.errors.push({
@@ -303,7 +317,6 @@ export const importLeadsService = async ({
       continue;
     }
 
-    // Duplicate within the file itself
     if (seenInBatch.has(lead.phone)) {
       results.duplicates++;
       results.errors.push({
@@ -320,11 +333,6 @@ export const importLeadsService = async ({
 
   if (newLeads.length === 0) return results;
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 4: createMany in chunks of 500
-  //         Was: 1 INSERT per lead = N queries
-  //         Now: ceil(N/500) queries total
-  // ─────────────────────────────────────────────────────────────
   const CHUNK_SIZE = 500;
 
   for (let i = 0; i < newLeads.length; i += CHUNK_SIZE) {
@@ -341,12 +349,11 @@ export const importLeadsService = async ({
           campaignId,
           status: "FRESH",
         })),
-        skipDuplicates: true, // safety net
+        skipDuplicates: true,
       });
 
       results.success += inserted.count;
     } catch (error) {
-      // Chunk failed — retry row by row to isolate bad records
       console.error(`Chunk failed, retrying individually:`, error.message);
 
       for (const lead of chunk) {
@@ -375,11 +382,6 @@ export const importLeadsService = async ({
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 5: ONE bulk insert for all activities
-  //         Was: 1 INSERT per lead = N queries
-  //         Now: 1 query total
-  // ─────────────────────────────────────────────────────────────
   if (results.success > 0) {
     try {
       const createdLeads = await prisma.lead.findMany({
@@ -400,7 +402,6 @@ export const importLeadsService = async ({
         })),
       });
     } catch (activityError) {
-      // Don't fail the import if activities fail
       console.error("Failed to create activities:", activityError.message);
     }
   }
@@ -477,8 +478,6 @@ export const updateLeadService = async ({ id, teamId, userId, leadData }) => {
   if (leadData.meta !== undefined)
     updateData.meta = normalizeMeta(leadData.meta);
 
-  // email intentionally excluded — not in Lead schema
-
   const lead = await prisma.$transaction(async (tx) => {
     const updated = await tx.lead.update({ where: { id }, data: updateData });
 
@@ -504,171 +503,68 @@ export const deleteLeadService = async (id, teamId) => {
   return { success: true };
 };
 
-//////
+/* ================= Search Leads Service ================= */
 
-// export const bulkUpdateCampaignService = async ({
-//   manager,
-//   campaignId,
-//   limit,
-//   offset = 0,
-//   status,
-//   employeeDistribution,
-// }) => {
-//   console.log("bulkUpdateCampaign called with:", {
-//     manager,
-//     campaignId,
-//     limit,
-//     offset,
-//     status,
-//     employeeDistribution,
-//   });
-//   if (!campaignId) throw new Error("Campaign ID is required");
+export const searchLeadsService = async ({
+  teamId,
+  q,
+  mode = "auto",
+  limit = 30,
+}) => {
+  if (!q || !q.trim()) return [];
 
-//   // ─────────────────────────────────────────────────────────────
-//   // STEP 1: Fetch lead IDs from campaign (ONE query)
-//   // ─────────────────────────────────────────────────────────────
-//   const leads = await prisma.lead.findMany({
-//     where: { campaignId, teamId: manager.teamId },
-//     skip: offset,
-//     take: limit || 999999,
-//     select: { id: true },
-//     orderBy: { createdAt: "asc" },
-//   });
+  const term = q.trim();
 
-//   if (!leads.length) throw new Error("No leads found in campaign");
+  /* ── Build the Prisma WHERE based on search mode ── */
+  let orConditions = [];
 
-//   const leadIds = leads.map((l) => l.id);
-//   const totalLeads = leadIds.length;
+  if (mode === "phone") {
+    // Strip all non-digits then do a contains match
+    const digits = term.replace(/\D/g, "");
+    orConditions = [{ phone: { contains: digits } }];
+  } else if (mode === "email") {
+    orConditions = [
+      {
+        meta: {
+          path: ["email"],
+          string_contains: term,
+        },
+      },
+    ];
+  } else if (mode === "text") {
+    // Name / company only
+    orConditions = [
+      { personName: { contains: term, mode: "insensitive" } },
+      { companyName: { contains: term, mode: "insensitive" } },
+    ];
+  } else {
+    // AUTO — try everything: name, phone (digits), company, email in meta
+    const digits = term.replace(/\D/g, "");
+    orConditions = [
+      { personName: { contains: term, mode: "insensitive" } },
+      { companyName: { contains: term, mode: "insensitive" } },
+      ...(digits.length >= 4 ? [{ phone: { contains: digits } }] : []),
+      {
+        meta: {
+          path: ["email"],
+          string_contains: term,
+        },
+      },
+    ];
+  }
 
-//   // ─────────────────────────────────────────────────────────────
-//   // CASE A: Status update only — no employee distribution
-//   // ─────────────────────────────────────────────────────────────
-//   if (!employeeDistribution || employeeDistribution.length === 0) {
-//     if (!status)
-//       throw new Error("Either status or employee distribution is required");
+  const leads = await prisma.lead.findMany({
+    where: {
+      teamId, // ← always scope to the user's team
+      OR: orConditions,
+    },
+    include: {
+      assignedTo: { select: { id: true, name: true } },
+      campaign: { select: { id: true, name: true } },
+    },
+    orderBy: { updatedAt: "desc" }, // most recently touched first
+    take: limit,
+  });
 
-//     // ONE query for all leads
-//     await prisma.lead.updateMany({
-//       where: { id: { in: leadIds } },
-//       data: { status },
-//     });
-
-//     return {
-//       totalLeads,
-//       updated: totalLeads,
-//       assigned: 0,
-//       distribution: [],
-//     };
-//   }
-
-//   // ─────────────────────────────────────────────────────────────
-//   // CASE B: Assign to employees with distribution
-//   // ─────────────────────────────────────────────────────────────
-
-//   // Validate employees in ONE query
-//   const users = await prisma.user.findMany({
-//     where: {
-//       id: { in: employeeDistribution.map((e) => e.employeeId) },
-//       role: "EMPLOYEE",
-//       teamId: manager.teamId,
-//       isActive: true,
-//     },
-//     select: { id: true, name: true },
-//   });
-
-//   if (!users.length) throw new Error("No valid employees found");
-
-//   const validEmployeeIds = new Set(users.map((u) => u.id));
-//   const validEmployees = employeeDistribution.filter((e) =>
-//     validEmployeeIds.has(e.employeeId),
-//   );
-
-//   if (!validEmployees.length) throw new Error("No valid employees found");
-
-//   // ─────────────────────────────────────────────────────────────
-//   // STEP 2: Calculate assignments in memory (0 DB calls)
-//   // ─────────────────────────────────────────────────────────────
-//   const assignments = []; // [{ leadId, employeeId }]
-//   let leadIndex = 0;
-
-//   const hasPercentages = validEmployees.some(
-//     (e) => e.percentage != null && e.percentage > 0,
-//   );
-
-//   if (hasPercentages) {
-//     // Percentage-based distribution
-//     for (const emp of validEmployees) {
-//       const percent = emp.percentage ?? 0;
-//       const count = Math.round((percent / 100) * totalLeads);
-//       for (let i = 0; i < count && leadIndex < totalLeads; i++) {
-//         assignments.push({
-//           leadId: leadIds[leadIndex++],
-//           employeeId: emp.employeeId,
-//         });
-//       }
-//     }
-//   }
-
-//   // Fill remaining with round-robin
-//   let rr = 0;
-//   while (leadIndex < totalLeads) {
-//     assignments.push({
-//       leadId: leadIds[leadIndex],
-//       employeeId: validEmployees[rr % validEmployees.length].employeeId,
-//     });
-//     leadIndex++;
-//     rr++;
-//   }
-
-//   const finalStatus = status || "ASSIGNED";
-
-//   // ─────────────────────────────────────────────────────────────
-//   // STEP 3: ONE updateMany per employee
-//   //         e.g. 3 employees = 3 queries (NOT 3000)
-//   // ─────────────────────────────────────────────────────────────
-//   const byEmployee = new Map();
-//   for (const a of assignments) {
-//     if (!byEmployee.has(a.employeeId)) byEmployee.set(a.employeeId, []);
-//     byEmployee.get(a.employeeId).push(a.leadId);
-//   }
-
-//   await Promise.all(
-//     [...byEmployee.entries()].map(([employeeId, ids]) =>
-//       prisma.lead.updateMany({
-//         where: { id: { in: ids } },
-//         data: {
-//           assignedToId: employeeId,
-//           status: finalStatus,
-//         },
-//       }),
-//     ),
-//   );
-
-//   // ─────────────────────────────────────────────────────────────
-//   // STEP 4: ONE bulk insert for all activities (NOT N inserts)
-//   // ─────────────────────────────────────────────────────────────
-//   await prisma.leadActivity.createMany({
-//     data: assignments.map((a) => ({
-//       leadId: a.leadId,
-//       userId: manager.id,
-//       type: "ASSIGNED",
-//       remark: "Lead assigned",
-//     })),
-//   });
-
-//   // ─────────────────────────────────────────────────────────────
-//   // STEP 5: Build distribution summary
-//   // ─────────────────────────────────────────────────────────────
-//   const distribution = validEmployees.map((emp) => ({
-//     employeeId: emp.employeeId,
-//     employeeName: users.find((u) => u.id === emp.employeeId)?.name,
-//     count: byEmployee.get(emp.employeeId)?.length ?? 0,
-//     percentage: emp.percentage,
-//   }));
-
-//   return {
-//     totalLeads,
-//     assigned: assignments.length,
-//     distribution,
-//   };
-// };
+  return leads;
+};

@@ -5,6 +5,7 @@ import {
   assignLeadsService,
   importLeadsService,
   createLeadService,
+  searchLeadsService,
 } from "./lead.service.js";
 
 /* ================= GET LEADS ================= */
@@ -648,5 +649,28 @@ export const deleteLead = async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+};
+
+// SEARCH LEADS CONTROLLER
+export const searchLeadsController = async (req, res) => {
+  try {
+    const { q, mode = "auto", limit } = req.query;
+
+    if (!q || !q.trim()) {
+      return res.status(400).json({ error: "Search query (q) is required" });
+    }
+
+    const results = await searchLeadsService({
+      teamId: req.user.teamId,
+      q: q.trim(),
+      mode: mode.toLowerCase(),
+      limit: limit ? Math.min(parseInt(limit, 10), 100) : 30,
+    });
+
+    return res.json(results);
+  } catch (error) {
+    console.error("searchLeadsController error:", error);
+    return res.status(500).json({ error: "Failed to search leads" });
   }
 };
