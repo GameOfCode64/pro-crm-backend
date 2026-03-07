@@ -2,21 +2,36 @@ import express from "express";
 import auth from "../../middlewares/auth.middleware.js";
 import role from "../../middlewares/role.middleware.js";
 import {
-  exportAttendance,
-  exportLeads,
-  previewLeads,
   getMyCallingReportController,
+  getTeamCallingReportController,
+  exportTeamCallingReportController,
+  getAttendanceController,
+  exportAttendanceController,
 } from "./report.controller.js";
 
 const router = express.Router();
 
-router.post("/attendance/export", auth, role("MANAGER"), exportAttendance);
+router.get(
+  "/team-calls/export",
+  auth,
+  role("MANAGER"),
+  exportTeamCallingReportController,
+);
+router.get(
+  "/team-calls",
+  auth,
+  role("MANAGER"),
+  getTeamCallingReportController,
+);
 
-// NEW: Preview endpoint
-router.post("/leads/preview", auth, role("MANAGER"), previewLeads);
-
-// Updated: Export endpoint
-router.post("/leads/export", auth, role("MANAGER"), exportLeads);
+// ── Attendance ──────────────────────────────────────────────
+router.get(
+  "/attendance/export",
+  auth,
+  role("MANAGER"),
+  exportAttendanceController,
+);
+router.get("/attendance", auth, role("MANAGER"), getAttendanceController);
 
 router.get("/my-calls", auth, role("EMPLOYEE"), getMyCallingReportController);
 

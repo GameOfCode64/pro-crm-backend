@@ -1,6 +1,7 @@
 import {
   getCampaignsService,
   createCampaignService,
+  getMyCampaignsService,
 } from "./campaign.service.js";
 
 /**
@@ -46,5 +47,19 @@ export const createCampaign = async (req, res, next) => {
     res.status(201).json(campaign);
   } catch (err) {
     next(err);
+  }
+};
+
+export const getMyCampaignsController = async (req, res) => {
+  try {
+    const campaigns = await getMyCampaignsService({
+      userId: req.user.id,
+      teamId: req.user.teamId,
+    });
+
+    return res.json({ campaigns });
+  } catch (error) {
+    console.error("getMyCampaignsController error:", error);
+    return res.status(500).json({ error: "Failed to fetch campaigns" });
   }
 };

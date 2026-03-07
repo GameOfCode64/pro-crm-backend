@@ -24,17 +24,13 @@ router.get(
   "/employees",
   authMiddleware,
   roleMiddleware("MANAGER"),
-  getEmployees
+  getEmployees,
 );
-
-/**
- * Admin only
- */
 router.patch(
   "/:id/status",
   authMiddleware,
-  roleMiddleware("ADMIN"),
-  toggleUserStatus
+  roleMiddleware("MANAGER"),
+  toggleUserStatus,
 );
 
 export default router;
