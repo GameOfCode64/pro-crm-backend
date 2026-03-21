@@ -15,10 +15,8 @@ const getDateRange = (from, to) => {
   return dates;
 };
 
-/** ISO date → "YYYY-MM-DD" string key */
 const dayKey = (d) => new Date(d).toISOString().slice(0, 10);
 
-/** Parse "2m 30s" OR raw seconds integer → total seconds */
 const parseDuration = (raw) => {
   if (!raw) return 0;
   if (typeof raw === "number") return raw;
@@ -46,7 +44,6 @@ function buildChartBuckets(activities, period) {
     }
     return Object.entries(hours).map(([label, calls]) => ({ label, calls }));
   }
-
   if (period === "WEEK") {
     const days = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -56,17 +53,14 @@ function buildChartBuckets(activities, period) {
     }
     return Object.entries(days).map(([label, calls]) => ({ label, calls }));
   }
-
   if (period === "MONTH") {
     const weeks = { W1: 0, W2: 0, W3: 0, W4: 0, W5: 0 };
     for (const a of activities) {
-      const day = new Date(a.createdAt).getDate();
-      const week = `W${Math.ceil(day / 7)}`;
+      const week = `W${Math.ceil(new Date(a.createdAt).getDate() / 7)}`;
       if (week in weeks) weeks[week]++;
     }
     return Object.entries(weeks).map(([label, calls]) => ({ label, calls }));
   }
-
   if (period === "YEAR") {
     const months = {
       Jan: 0,
@@ -83,17 +77,15 @@ function buildChartBuckets(activities, period) {
       Dec: 0,
     };
     const monthKeys = Object.keys(months);
-    for (const a of activities) {
+    for (const a of activities)
       months[monthKeys[new Date(a.createdAt).getMonth()]]++;
-    }
     return Object.entries(months).map(([label, calls]) => ({ label, calls }));
   }
-
   return [];
 }
 
 /* ════════════════════════════════════════════════════════════════
-   ATTENDANCE DATA  (used by xlsx export)
+   ATTENDANCE DATA  (xlsx export)
    ════════════════════════════════════════════════════════════════ */
 
 export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
@@ -114,10 +106,7 @@ export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
     where: {
       type: "CALL",
       userId: { in: employees.map((e) => e.id) },
-      createdAt: {
-        gte: new Date(from),
-        lte: new Date(to + "T23:59:59.999Z"),
-      },
+      createdAt: { gte: new Date(from), lte: new Date(to + "T23:59:59.999Z") },
     },
     select: { userId: true, createdAt: true },
   });
@@ -142,12 +131,11 @@ export const getAttendanceData = async ({ manager, from, to, employeeIds }) => {
       });
     }
   }
-
   return rows;
 };
 
 /* ════════════════════════════════════════════════════════════════
-   LEADS EXPORT DATA  (used by xlsx export)
+   LEADS EXPORT DATA  (xlsx export)
    ════════════════════════════════════════════════════════════════ */
 
 export const getLeadsExportData = async ({
@@ -165,13 +153,8 @@ export const getLeadsExportData = async ({
 
   const latestCalls = await prisma.$queryRaw`
     SELECT DISTINCT ON ("leadId")
-      la.id,
-      la."leadId",
-      la."createdAt",
-      la."outcomeId",
-      la."outcomeReasonId",
-      la.remark,
-      la."userId"
+      la.id, la."leadId", la."createdAt",
+      la."outcomeId", la."outcomeReasonId", la.remark, la."userId"
     FROM "LeadActivity" la
     WHERE la.type = 'CALL'
       AND la."createdAt" BETWEEN ${fromDate} AND ${toDate}
@@ -192,7 +175,12 @@ export const getLeadsExportData = async ({
     include: {
       assignedTo: { select: { name: true } },
       campaign: { select: { name: true } },
-      formResponses: { orderBy: { createdAt: "desc" }, take: 1 },
+      // fetch schemaSnapshot alongside values so we can remap IDs → titles
+      formResponses: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { values: true, schemaSnapshot: true },
+      },
     },
   });
 
@@ -206,6 +194,16 @@ export const getLeadsExportData = async ({
     .map((call) => {
       const lead = leadMap[call.leadId];
       if (!lead) return null;
+
+      // Remap form field IDs → human-readable titles using schemaSnapshot
+      const formResponse = lead.formResponses?.[0];
+      const rawValues = formResponse?.values ?? {};
+      const idToTitle = buildFieldTitleMap(formResponse?.schemaSnapshot);
+      const form = {};
+      for (const [id, value] of Object.entries(rawValues)) {
+        form[idToTitle[id] ?? id] = value;
+      }
+
       return {
         leadName: lead.personName || "",
         phone: lead.phone || "",
@@ -216,14 +214,14 @@ export const getLeadsExportData = async ({
         outcome: outcomeMap[call.outcomeId] ?? "NO OUTCOME",
         remark: call.remark ?? "",
         callDate: call.createdAt.toISOString().split("T")[0],
-        form: lead.formResponses?.[0]?.values ?? {},
+        form,
       };
     })
     .filter(Boolean);
 };
 
 /* ════════════════════════════════════════════════════════════════
-   MY CALLING REPORT  (employee — own calls)
+   MY CALLING REPORT  (employee)
    ════════════════════════════════════════════════════════════════ */
 
 export const getMyCallingReportService = async ({
@@ -273,8 +271,6 @@ export const getMyCallingReportService = async ({
     }
   }
 
-  const chartData = buildChartBuckets(activities, period);
-
   const leadMap = new Map();
   for (const a of activities) {
     if (!leadMap.has(a.leadId)) leadMap.set(a.leadId, a.lead);
@@ -284,13 +280,13 @@ export const getMyCallingReportService = async ({
     totalCalls,
     totalDuration,
     totalSales,
-    chartData,
+    chartData: buildChartBuckets(activities, period),
     leads: Array.from(leadMap.values()),
   };
 };
 
 /* ════════════════════════════════════════════════════════════════
-   TEAM CALLING REPORT  (manager — all / one employee's calls)
+   TEAM CALLING REPORT  (manager)
    ════════════════════════════════════════════════════════════════ */
 
 export const getTeamCallingReportService = async ({
@@ -343,34 +339,29 @@ export const getTeamCallingReportService = async ({
     }
   }
 
-  /* Per-employee breakdown */
   const employeeMap = new Map();
   for (const a of activities) {
     if (!a.user) continue;
-    if (!employeeMap.has(a.userId)) {
+    if (!employeeMap.has(a.userId))
       employeeMap.set(a.userId, {
         id: a.userId,
         name: a.user.name,
         calls: 0,
         duration: 0,
       });
-    }
-    const entry = employeeMap.get(a.userId);
-    entry.calls++;
-    entry.duration += parseDuration(a.duration);
+    const e = employeeMap.get(a.userId);
+    e.calls++;
+    e.duration += parseDuration(a.duration);
   }
-
-  const chartData = buildChartBuckets(activities, period);
 
   const leadMap = new Map();
   for (const a of activities) {
-    if (!leadMap.has(a.leadId)) {
+    if (!leadMap.has(a.leadId))
       leadMap.set(a.leadId, {
         ...a.lead,
         callCount: 0,
         lastCalledAt: a.createdAt,
       });
-    }
     leadMap.get(a.leadId).callCount++;
   }
 
@@ -378,23 +369,64 @@ export const getTeamCallingReportService = async ({
     totalCalls,
     totalDuration,
     totalSales,
-    chartData,
+    chartData: buildChartBuckets(activities, period),
     employeeBreakdown: Array.from(employeeMap.values()),
     leads: Array.from(leadMap.values()),
   };
 };
 
 /* ════════════════════════════════════════════════════════════════
-   TEAM CALLING REPORT  —  CSV EXPORT
+   SHARED ROW BUILDER  (CSV + Excel — includes form data)
    ════════════════════════════════════════════════════════════════ */
 
-export const getTeamCallingReportCsvService = async ({
-  teamId,
-  employeeId,
-  from,
-  to,
-  period,
-}) => {
+/**
+ * Build an ID → human title map from a form schemaSnapshot.
+ * schemaSnapshot shape: { fields: [{ id, label, title, name }] } or array directly.
+ */
+const buildFieldTitleMap = (schemaSnapshot) => {
+  if (!schemaSnapshot) return {};
+  try {
+    const snapshot =
+      typeof schemaSnapshot === "string"
+        ? JSON.parse(schemaSnapshot)
+        : schemaSnapshot;
+
+    // Handle all known schema shapes:
+    //   1. Array of field objects directly: [{ id, label/title/name }]
+    //   2. { fields: [...] }
+    //   3. { schema: { fields: [...] } }
+    //   4. { sections: [{ fields: [...] }] }
+    let fields = [];
+
+    if (Array.isArray(snapshot)) {
+      fields = snapshot;
+    } else if (Array.isArray(snapshot.fields)) {
+      fields = snapshot.fields;
+    } else if (Array.isArray(snapshot.schema?.fields)) {
+      fields = snapshot.schema.fields;
+    } else if (Array.isArray(snapshot.sections)) {
+      // Flatten sections → fields
+      fields = snapshot.sections.flatMap((s) => s.fields ?? []);
+    }
+
+    const map = {};
+    for (const field of fields) {
+      if (!field?.id) continue;
+      // Try every possible title key in order of preference
+      map[field.id] =
+        field.label ??
+        field.title ??
+        field.name ??
+        field.placeholder ??
+        field.id;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+};
+
+const buildCallingReportRows = async ({ teamId, employeeId, from, to }) => {
   const fromDate = new Date(from);
   const toDate = new Date(to);
 
@@ -409,17 +441,67 @@ export const getTeamCallingReportCsvService = async ({
     where,
     include: {
       user: { select: { name: true } },
+      outcome: { select: { name: true } },
       lead: {
         include: {
-          assignedTo: { select: { name: true } },
           campaign: { select: { name: true } },
+          formResponses: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            // fetch schemaSnapshot to map field IDs → human titles
+            select: { values: true, schemaSnapshot: true },
+          },
         },
       },
-      outcome: { select: { name: true } },
     },
     orderBy: { createdAt: "asc" },
   });
 
+  return activities.map((a) => {
+    const dt = new Date(a.createdAt);
+    const formResponse = a.lead?.formResponses?.[0];
+    const rawValues = formResponse?.values ?? {};
+    const idToTitle = buildFieldTitleMap(formResponse?.schemaSnapshot);
+
+    // Re-key values: field ID → human title
+    // e.g. { "EVnpVtR9LwvlP24LQurTw": "John" } → { "Customer Name": "John" }
+    const formData = {};
+    for (const [id, value] of Object.entries(rawValues)) {
+      const title = idToTitle[id] ?? id; // fall back to raw ID if no mapping found
+      formData[title] = value;
+    }
+
+    return {
+      date: dt.toLocaleDateString("en-IN"),
+      time: dt.toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      employee: a.user?.name ?? "",
+      leadName: a.lead?.personName || a.lead?.companyName || "",
+      phone: a.lead?.phone ?? "",
+      leadStatus: a.lead?.status ?? "",
+      campaign: a.lead?.campaign?.name ?? "",
+      outcome: a.outcome?.name ?? "",
+      duration: parseDuration(a.duration),
+      remark: a.remark ?? "",
+      formData,
+    };
+  });
+};
+
+/* ════════════════════════════════════════════════════════════════
+   CSV EXPORT  (includes form data as dynamic columns)
+   ════════════════════════════════════════════════════════════════ */
+
+export const getTeamCallingReportCsvService = async ({
+  teamId,
+  employeeId,
+  from,
+  to,
+}) => {
+  const rows = await buildCallingReportRows({ teamId, employeeId, from, to });
+  const formKeys = [...new Set(rows.flatMap((r) => Object.keys(r.formData)))];
   const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
 
   const headers = [
@@ -433,28 +515,38 @@ export const getTeamCallingReportCsvService = async ({
     "Outcome",
     "Duration (s)",
     "Remark",
+    ...formKeys,
   ];
 
-  const rows = activities.map((a) => {
-    const dt = new Date(a.createdAt);
-    return [
-      escape(dt.toLocaleDateString("en-IN")),
-      escape(
-        dt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
-      ),
-      escape(a.user?.name),
-      escape(a.lead?.personName || a.lead?.companyName),
-      escape(a.lead?.phone),
-      escape(a.lead?.status),
-      escape(a.lead?.campaign?.name),
-      escape(a.outcome?.name),
-      escape(parseDuration(a.duration)),
-      escape(a.remark),
-    ].join(",");
-  });
+  const csvRows = rows.map((r) =>
+    [
+      escape(r.date),
+      escape(r.time),
+      escape(r.employee),
+      escape(r.leadName),
+      escape(r.phone),
+      escape(r.leadStatus),
+      escape(r.campaign),
+      escape(r.outcome),
+      escape(r.duration),
+      escape(r.remark),
+      ...formKeys.map((k) => escape(r.formData[k])),
+    ].join(","),
+  );
 
-  return [headers.join(","), ...rows].join("\n");
+  return [headers.join(","), ...csvRows].join("\n");
 };
+
+/* ════════════════════════════════════════════════════════════════
+   EXCEL EXPORT DATA  (returns rows for buildCallingReportWorkbook)
+   ════════════════════════════════════════════════════════════════ */
+
+export const getTeamCallingReportExcelService = async ({
+  teamId,
+  employeeId,
+  from,
+  to,
+}) => buildCallingReportRows({ teamId, employeeId, from, to });
 
 /* ════════════════════════════════════════════════════════════════
    ATTENDANCE SERVICE  (manager calendar grid)
@@ -485,43 +577,24 @@ export const getAttendanceService = async ({
       userId: { in: employees.map((e) => e.id) },
       date: { gte: fromDate, lte: toDate },
     },
-    select: {
-      userId: true,
-      date: true,
-      clockIn: true, // ✅ renamed from checkIn
-      clockOut: true, // ✅ renamed from checkOut
-      // ❌ removed: status, note (don't exist in schema)
-    },
+    select: { userId: true, date: true, clockIn: true, clockOut: true },
   });
 
-  // Derive status from clockIn/clockOut since there's no status field
-  const deriveStatus = (record) => {
-    if (!record.clockIn) return "ABSENT";
-
-    const clockIn = new Date(record.clockIn);
-    const hours = clockIn.getHours();
-    const minutes = clockIn.getMinutes();
-    const totalMinutes = hours * 60 + minutes;
-
-    // Define your late threshold — e.g. 9:30 AM = 570 minutes
-    const lateThreshold = 9 * 60 + 30;
-    // Define half-day threshold — e.g. after 12:00 PM = 720 minutes
-    const halfDayThreshold = 12 * 60;
-
-    if (totalMinutes >= halfDayThreshold) return "HALF_DAY";
-    if (totalMinutes > lateThreshold) return "LATE";
+  const deriveStatus = (r) => {
+    if (!r.clockIn) return "ABSENT";
+    const mins =
+      new Date(r.clockIn).getHours() * 60 + new Date(r.clockIn).getMinutes();
+    if (mins >= 720) return "HALF_DAY";
+    if (mins > 570) return "LATE";
     return "PRESENT";
   };
 
-  /* Group by userId → { "YYYY-MM-DD": status } */
   const recordsByUser = new Map();
   for (const r of records) {
     if (!recordsByUser.has(r.userId)) recordsByUser.set(r.userId, {});
-    const status = deriveStatus(r);
-    recordsByUser.get(r.userId)[dayKey(r.date)] = status;
+    recordsByUser.get(r.userId)[dayKey(r.date)] = deriveStatus(r);
   }
 
-  /* Working days Mon–Fri */
   const workingDays = [];
   const cur = new Date(fromDate);
   while (cur <= toDate) {
@@ -538,7 +611,6 @@ export const getAttendanceService = async ({
       late = 0,
       halfDay = 0,
       holiday = 0;
-
     for (const d of workingDays) {
       const s = dayRecords[d];
       if (!s || s === "ABSENT") absent++;
@@ -549,7 +621,6 @@ export const getAttendanceService = async ({
       } else if (s === "HALF_DAY") halfDay++;
       else if (s === "HOLIDAY") holiday++;
     }
-
     return {
       id: emp.id,
       name: emp.name,
@@ -583,7 +654,7 @@ export const getAttendanceService = async ({
 };
 
 /* ════════════════════════════════════════════════════════════════
-   ATTENDANCE  —  CSV EXPORT
+   ATTENDANCE CSV EXPORT
    ════════════════════════════════════════════════════════════════ */
 
 export const getAttendanceCsvService = async ({
@@ -615,39 +686,40 @@ export const getAttendanceCsvService = async ({
   const empById = Object.fromEntries(employees.map((e) => [e.id, e.name]));
   const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
 
-  const headers = [
-    "Employee",
-    "Date",
-    "Status",
-    "Check In",
-    "Check Out",
-    "Note",
-  ];
+  const headers = ["Employee", "Date", "Clock In", "Clock Out", "Status"];
 
-  const rows = records.map((r) =>
-    [
+  const rows = records.map((r) => {
+    const clockIn = r.clockIn
+      ? new Date(r.clockIn).toLocaleTimeString("en-IN", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "";
+    const clockOut = r.clockOut
+      ? new Date(r.clockOut).toLocaleTimeString("en-IN", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "";
+    const mins = r.clockIn
+      ? new Date(r.clockIn).getHours() * 60 + new Date(r.clockIn).getMinutes()
+      : -1;
+    const status =
+      mins < 0
+        ? "ABSENT"
+        : mins >= 720
+          ? "HALF_DAY"
+          : mins > 570
+            ? "LATE"
+            : "PRESENT";
+    return [
       escape(empById[r.userId] ?? r.userId),
       escape(new Date(r.date).toLocaleDateString("en-IN")),
-      escape(r.status),
-      escape(
-        r.checkIn
-          ? new Date(r.checkIn).toLocaleTimeString("en-IN", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "",
-      ),
-      escape(
-        r.checkOut
-          ? new Date(r.checkOut).toLocaleTimeString("en-IN", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "",
-      ),
-      escape(r.note),
-    ].join(","),
-  );
+      escape(clockIn),
+      escape(clockOut),
+      escape(status),
+    ].join(",");
+  });
 
   return [headers.join(","), ...rows].join("\n");
 };

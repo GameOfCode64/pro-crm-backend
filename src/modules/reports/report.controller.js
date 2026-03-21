@@ -1,6 +1,7 @@
 import {
   buildAttendanceWorkbook,
   buildLeadsWorkbook,
+  buildCallingReportWorkbook,
 } from "./reports.excel.js";
 
 import {
@@ -9,6 +10,7 @@ import {
   getMyCallingReportService,
   getTeamCallingReportService,
   getTeamCallingReportCsvService,
+  getTeamCallingReportExcelService,
   getAttendanceService,
   getAttendanceCsvService,
 } from "./report.service.js";
@@ -76,11 +78,10 @@ export const exportLeads = async (req, res, next) => {
       campaignId,
       statuses,
     });
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res
         .status(404)
         .json({ error: "No data found for the selected criteria" });
-    }
 
     const workbook = await buildLeadsWorkbook(rows);
     res.setHeader(
@@ -105,11 +106,10 @@ export const exportLeads = async (req, res, next) => {
 export const getMyCallingReportController = async (req, res) => {
   try {
     const { from, to, period = "DAY" } = req.query;
-    if (!from || !to) {
+    if (!from || !to)
       return res
         .status(400)
         .json({ error: "from and to query params are required" });
-    }
 
     const data = await getMyCallingReportService({
       userId: req.user.id,
@@ -118,7 +118,6 @@ export const getMyCallingReportController = async (req, res) => {
       to,
       period,
     });
-
     return res.json(data);
   } catch (err) {
     console.error("getMyCallingReportController:", err);
@@ -133,9 +132,8 @@ export const getMyCallingReportController = async (req, res) => {
 export const getTeamCallingReportController = async (req, res) => {
   try {
     const { from, to, period = "DAY", employeeId } = req.query;
-    if (!from || !to) {
+    if (!from || !to)
       return res.status(400).json({ error: "from and to are required" });
-    }
 
     const data = await getTeamCallingReportService({
       teamId: req.user.teamId,
@@ -144,7 +142,6 @@ export const getTeamCallingReportController = async (req, res) => {
       to,
       period,
     });
-
     return res.json(data);
   } catch (err) {
     console.error("getTeamCallingReportController:", err);
@@ -154,13 +151,36 @@ export const getTeamCallingReportController = async (req, res) => {
   }
 };
 
+/* ── CSV export ── */
 export const exportTeamCallingReportController = async (req, res) => {
   try {
-    const { from, to, period = "DAY", employeeId } = req.query;
-    if (!from || !to) {
+    const { from, to, period = "DAY", employeeId, format = "csv" } = req.query;
+    if (!from || !to)
       return res.status(400).json({ error: "from and to are required" });
+
+    // ── Excel export ──────────────────────────────────────────
+    if (format === "xlsx") {
+      const rows = await getTeamCallingReportExcelService({
+        teamId: req.user.teamId,
+        employeeId: employeeId || undefined,
+        from,
+        to,
+      });
+      const workbook = await buildCallingReportWorkbook(rows);
+      const filename = `calling-report-${new Date(from).toISOString().slice(0, 10)}.xlsx`;
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
+      await workbook.xlsx.write(res);
+      return res.end();
     }
 
+    // ── CSV export (default) ──────────────────────────────────
     const csv = await getTeamCallingReportCsvService({
       teamId: req.user.teamId,
       employeeId: employeeId || undefined,
@@ -168,7 +188,6 @@ export const exportTeamCallingReportController = async (req, res) => {
       to,
       period,
     });
-
     const filename = `calling-report-${new Date(from).toISOString().slice(0, 10)}.csv`;
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -186,9 +205,8 @@ export const exportTeamCallingReportController = async (req, res) => {
 export const getAttendanceController = async (req, res) => {
   try {
     const { from, to, employeeId } = req.query;
-    if (!from || !to) {
+    if (!from || !to)
       return res.status(400).json({ error: "from and to are required" });
-    }
 
     const data = await getAttendanceService({
       teamId: req.user.teamId,
@@ -196,7 +214,6 @@ export const getAttendanceController = async (req, res) => {
       from,
       to,
     });
-
     return res.json(data);
   } catch (err) {
     console.error("getAttendanceController:", err);
@@ -207,9 +224,8 @@ export const getAttendanceController = async (req, res) => {
 export const exportAttendanceController = async (req, res) => {
   try {
     const { from, to, employeeId } = req.query;
-    if (!from || !to) {
+    if (!from || !to)
       return res.status(400).json({ error: "from and to are required" });
-    }
 
     const csv = await getAttendanceCsvService({
       teamId: req.user.teamId,
@@ -217,7 +233,6 @@ export const exportAttendanceController = async (req, res) => {
       from,
       to,
     });
-
     const filename = `attendance-${new Date(from).toISOString().slice(0, 7)}.csv`;
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

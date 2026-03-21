@@ -1,97 +1,89 @@
 import prisma from "../../config/db.js";
 import { parseUploadFile } from "./upload.utils.js";
 
-/* ================= UTILITY FUNCTIONS ================= */
+/* ═══════════════════════════════════════════════════════════════
+   NORMALIZERS
+═══════════════════════════════════════════════════════════════ */
 
-/**
- * Normalize phone number to string format
- */
 const normalizePhoneNumber = (phone) => {
-  if (phone === null || phone === undefined || phone === "") {
-    return "";
-  }
+  if (phone === null || phone === undefined || phone === "") return "";
 
-  // Force to string first and trim
-  let phoneStr = String(phone).trim();
+  let s = String(phone).trim();
+  s = s.replace(/[\s\-\(\)\.]/g, "");
 
-  // Remove all non-digit characters (spaces, dashes, parentheses, dots)
-  phoneStr = phoneStr.replace(/[\s\-\(\)\.]/g, "");
-
-  // Handle scientific notation (Excel quirk)
-  if (phoneStr.includes("e") || phoneStr.includes("E")) {
+  // Handle Excel scientific notation e.g. 9.18E+9
+  if (/e/i.test(s)) {
     try {
-      const num = parseFloat(phoneStr);
-      phoneStr = num.toFixed(0);
-    } catch (e) {
-      console.error("Error parsing scientific notation:", e);
-    }
+      s = parseFloat(s).toFixed(0);
+    } catch (_) {}
   }
 
-  // Final cleanup - ensure only digits remain
-  phoneStr = phoneStr.replace(/\D/g, "");
-
-  return phoneStr;
+  s = s.replace(/\D/g, "");
+  return s;
 };
 
-/**
- * Normalize string field
- */
-const normalizeString = (value) => {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  return String(value).trim();
-};
+const normalizeString = (v) =>
+  v === null || v === undefined ? "" : String(v).trim();
 
-/**
- * Normalize meta object
- */
 const normalizeMeta = (meta) => {
-  if (!meta || typeof meta !== "object") {
-    return {};
-  }
-
-  const normalized = {};
-  for (const [key, value] of Object.entries(meta)) {
-    if (value === null || value === undefined) {
-      normalized[key] = "";
-      continue;
-    }
-    normalized[key] = String(value).trim();
-  }
-
-  return normalized;
+  if (!meta || typeof meta !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(meta).map(([k, v]) => [
+      k,
+      v == null ? "" : String(v).trim(),
+    ]),
+  );
 };
 
-/**
- * Normalize lead data from upload
- */
-const normalizeUploadLeadData = (leadData, meta) => {
-  return {
-    personName: normalizeString(leadData.personName),
-    companyName: normalizeString(leadData.companyName),
-    phone: normalizePhoneNumber(leadData.phone), // CRITICAL: Normalize phone
-    email: normalizeString(leadData.email),
-    meta: normalizeMeta(meta),
-  };
-};
+/* ═══════════════════════════════════════════════════════════════
+   CRUD HELPERS
+═══════════════════════════════════════════════════════════════ */
 
-/* ================= UPLOAD SERVICE FUNCTIONS ================= */
+export const createUploadSession = async (data) =>
+  prisma.uploadSession.create({ data });
 
-/**
- * Create upload session
- */
-export const createUploadSession = async (data) => {
-  return prisma.uploadSession.create({ data });
-};
+/* ═══════════════════════════════════════════════════════════════
+   SELECT SHEET
+   POST /uploads/:id/select-sheet  { sheetName }
+   Re-parses the stored file with the chosen sheet and updates
+   headers + sampleRows on the UploadSession.
+═══════════════════════════════════════════════════════════════ */
 
-/**
- * Save mappings
- */
-export const saveMappingsService = async (uploadId, mappings) => {
-  await prisma.uploadFieldMapping.deleteMany({
-    where: { uploadId },
+export const selectSheetService = async (uploadId, sheetName) => {
+  const session = await prisma.uploadSession.findUnique({
+    where: { id: uploadId },
   });
+  if (!session)
+    throw Object.assign(new Error("Upload not found"), { status: 404 });
+  if (!sheetName?.trim())
+    throw Object.assign(new Error("sheetName is required"), { status: 400 });
+
+  const { headers, sampleRows, sheets } = await parseUploadFile(
+    session.filePath,
+    sheetName,
+  );
+
+  if (!sheets.includes(sheetName))
+    throw Object.assign(new Error(`Sheet "${sheetName}" not found`), {
+      status: 400,
+    });
+
+  const updated = await prisma.uploadSession.update({
+    where: { id: uploadId },
+    data: { headers, sampleRows },
+  });
+
+  // Return the updated session PLUS the full sheet list so
+  // the frontend can still display / navigate the picker
+  return { ...updated, sheets, activeSheet: sheetName };
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   SAVE MAPPINGS
+═══════════════════════════════════════════════════════════════ */
+
+export const saveMappingsService = async (uploadId, mappings) => {
+  await prisma.uploadFieldMapping.deleteMany({ where: { uploadId } });
 
   await prisma.uploadFieldMapping.createMany({
     data: mappings.map((m) => ({
@@ -107,29 +99,22 @@ export const saveMappingsService = async (uploadId, mappings) => {
   });
 };
 
-/**
- * Save duplicate rule + preview
- */
-export const saveDuplicateRulesService = async (uploadId, field, action) => {
-  await prisma.uploadDuplicateRule.deleteMany({
-    where: { uploadId },
-  });
+/* ═══════════════════════════════════════════════════════════════
+   SAVE DUPLICATE RULES + PREVIEW STATS
+═══════════════════════════════════════════════════════════════ */
 
+export const saveDuplicateRulesService = async (uploadId, field, action) => {
+  await prisma.uploadDuplicateRule.deleteMany({ where: { uploadId } });
   await prisma.uploadDuplicateRule.create({
-    data: {
-      uploadId,
-      field,
-      action,
-    },
+    data: { uploadId, field, action },
   });
 
   const upload = await prisma.uploadSession.findUnique({
     where: { id: uploadId },
   });
-
   const { rows } = await parseUploadFile(upload.filePath);
 
-  const existingValues = new Set(
+  const existingPhones = new Set(
     (
       await prisma.lead.findMany({
         where: { teamId: upload.teamId },
@@ -139,16 +124,11 @@ export const saveDuplicateRulesService = async (uploadId, field, action) => {
   );
 
   let duplicates = 0;
-
   for (const row of rows) {
-    // Normalize the value for comparison
-    const rawValue = row[field];
-    const normalizedValue =
-      field === "phone"
-        ? normalizePhoneNumber(rawValue)
-        : normalizeString(rawValue);
-
-    if (existingValues.has(normalizedValue)) duplicates++;
+    const raw = row[field];
+    const val =
+      field === "phone" ? normalizePhoneNumber(raw) : normalizeString(raw);
+    if (existingPhones.has(val)) duplicates++;
   }
 
   const stats = {
@@ -159,42 +139,41 @@ export const saveDuplicateRulesService = async (uploadId, field, action) => {
 
   return prisma.uploadSession.update({
     where: { id: uploadId },
-    data: {
-      stats,
-      status: "VALIDATED",
-    },
+    data: { stats, status: "VALIDATED" },
   });
 };
 
-/**
- * Assign campaign
- */
+/* ═══════════════════════════════════════════════════════════════
+   ASSIGN CAMPAIGN
+═══════════════════════════════════════════════════════════════ */
+
 export const assignCampaignService = async (uploadId, body, user) => {
   let campaignId = body.campaignId;
 
   if (body.type === "new") {
     const campaign = await prisma.campaign.create({
-      data: {
-        name: body.name,
-        teamId: user.teamId,
-        createdById: user.id,
-      },
+      data: { name: body.name, teamId: user.teamId, createdById: user.id },
     });
     campaignId = campaign.id;
   }
 
   return prisma.uploadSession.update({
     where: { id: uploadId },
-    data: {
-      campaignId,
-      status: "CONFIRMED",
-    },
+    data: { campaignId, status: "CONFIRMED" },
   });
 };
 
-/**
- * Confirm upload → CREATE LEADS
- */
+/* ═══════════════════════════════════════════════════════════════
+   CONFIRM UPLOAD  →  CREATE LEADS
+   
+   FIX: removed seenInBatch deduplication — it was silently
+   dropping valid leads that shared a phone number within the
+   same file (e.g. same person, different company names).
+   
+   Only SKIP/UPDATE based on existing DB records, not within-file
+   duplicates, unless the duplicate rule explicitly says SKIP.
+═══════════════════════════════════════════════════════════════ */
+
 export const confirmUploadService = async (uploadId, user) => {
   const upload = await prisma.uploadSession.findUnique({
     where: { id: uploadId },
@@ -202,7 +181,7 @@ export const confirmUploadService = async (uploadId, user) => {
   });
 
   if (!upload) throw new Error("Upload not found");
-  if (!upload.campaignId) throw new Error("Campaign not assigned to upload");
+  if (!upload.campaignId) throw new Error("Campaign not assigned");
 
   const { rows } = await parseUploadFile(upload.filePath);
 
@@ -210,7 +189,7 @@ export const confirmUploadService = async (uploadId, user) => {
   let skipped = 0;
   const errors = [];
 
-  // STEP 1: Map + normalize ALL rows in memory (0 DB calls)
+  /* ── STEP 1: Map + normalize all rows in memory ── */
   const validLeads = [];
 
   for (let i = 0; i < rows.length; i++) {
@@ -219,33 +198,31 @@ export const confirmUploadService = async (uploadId, user) => {
     const meta = {};
 
     for (const mapping of upload.mappings) {
-      const value = row[mapping.excelColumn];
       if (!mapping.targetField) continue;
+      const value = row[mapping.excelColumn];
 
-      if (mapping.targetField === "personName") {
-        leadData.personName = value;
-      } else if (mapping.targetField === "companyName") {
+      if (mapping.targetField === "personName") leadData.personName = value;
+      else if (mapping.targetField === "companyName")
         leadData.companyName = value;
-      } else if (mapping.targetField === "phone") {
-        leadData.phone = value;
-      } else if (mapping.targetField.startsWith("meta.")) {
-        const key = mapping.targetField.replace("meta.", "");
-        meta[key] = value ?? "";
+      else if (mapping.targetField === "phone") leadData.phone = value;
+      else if (mapping.targetField.startsWith("meta.")) {
+        meta[mapping.targetField.replace("meta.", "")] = value ?? "";
       }
     }
 
-    const normalizedPhone = normalizePhoneNumber(leadData.phone);
-    const normalizedPersonName = normalizeString(leadData.personName);
-    const normalizedCompanyName = normalizeString(leadData.companyName);
-    const normalizedMeta = normalizeMeta(meta);
+    const phone = normalizePhoneNumber(leadData.phone);
+    const personName = normalizeString(leadData.personName);
+    const companyName = normalizeString(leadData.companyName);
 
-    if (!normalizedPhone) {
+    // ── Validation: phone is mandatory ──
+    if (!phone) {
       skipped++;
       errors.push({ row: i + 2, error: "Phone number is required", data: row });
       continue;
     }
 
-    if (!normalizedPersonName && !normalizedCompanyName) {
+    // ── Validation: at least one name ──
+    if (!personName && !companyName) {
       skipped++;
       errors.push({
         row: i + 2,
@@ -257,10 +234,10 @@ export const confirmUploadService = async (uploadId, user) => {
 
     validLeads.push({
       rowIndex: i,
-      phone: normalizedPhone,
-      personName: normalizedPersonName,
-      companyName: normalizedCompanyName,
-      meta: normalizedMeta,
+      phone,
+      personName,
+      companyName,
+      meta: normalizeMeta(meta),
     });
   }
 
@@ -275,7 +252,7 @@ export const confirmUploadService = async (uploadId, user) => {
     return { created: 0, skipped, totalRows: rows.length, errors };
   }
 
-  // STEP 2: ONE query to check ALL duplicates
+  /* ── STEP 2: ONE query — check which phones already exist in DB ── */
   const duplicateRule = upload.duplicateRules?.[0];
   let existingPhones = new Set();
 
@@ -290,53 +267,64 @@ export const confirmUploadService = async (uploadId, user) => {
     existingPhones = new Set(existing.map((l) => l.phone));
   }
 
-  // STEP 3: Filter duplicates in memory (0 DB calls)
-  const seenInBatch = new Set();
-  const newLeads = [];
+  /* ── STEP 3: Split into new leads vs duplicates ──
+     KEY FIX: removed seenInBatch — within-file duplicates are
+     now ALL imported (unless action is SKIP, in which case only
+     the DB duplicate check matters, not within-file).         ── */
+  const toInsert = [];
+  const toUpdate = [];
 
   for (const lead of validLeads) {
-    if (existingPhones.has(lead.phone) && duplicateRule?.action === "SKIP") {
-      skipped++;
-      errors.push({
-        row: lead.rowIndex + 2,
-        error: `Duplicate phone: ${lead.phone}`,
-        data: lead,
-      });
-      continue;
+    const isDuplicate = existingPhones.has(lead.phone);
+
+    if (isDuplicate) {
+      if (duplicateRule?.action === "SKIP") {
+        skipped++;
+        errors.push({
+          row: lead.rowIndex + 2,
+          error: `Duplicate phone: ${lead.phone}`,
+        });
+        continue;
+      }
+
+      if (duplicateRule?.action === "UPDATE") {
+        toUpdate.push(lead);
+        continue;
+      }
+
+      // KEEP_BOTH — fall through to insert
     }
 
-    if (seenInBatch.has(lead.phone)) {
-      skipped++;
-      errors.push({
-        row: lead.rowIndex + 2,
-        error: `Duplicate phone in file: ${lead.phone}`,
-        data: lead,
+    toInsert.push(lead);
+  }
+
+  /* ── STEP 4: UPDATE existing leads ── */
+  for (const lead of toUpdate) {
+    try {
+      await prisma.lead.updateMany({
+        where: { phone: lead.phone, teamId: upload.teamId },
+        data: {
+          personName: lead.personName || undefined,
+          companyName: lead.companyName || undefined,
+          meta: lead.meta,
+        },
       });
-      continue;
+      created++; // count updates as "processed"
+    } catch (err) {
+      skipped++;
+      errors.push({ row: lead.rowIndex + 2, error: err.message });
     }
-
-    seenInBatch.add(lead.phone);
-    newLeads.push(lead);
   }
 
-  if (newLeads.length === 0) {
-    await prisma.uploadSession.update({
-      where: { id: uploadId },
-      data: {
-        status: "COMPLETED",
-        stats: { totalRows: rows.length, created: 0, skipped, errors },
-      },
-    });
-    return { created: 0, skipped, totalRows: rows.length, errors };
-  }
-
-  // STEP 4: createMany in chunks of 500
+  /* ── STEP 5: INSERT new leads in chunks of 500 ── */
   const CHUNK_SIZE = 500;
 
-  for (let i = 0; i < newLeads.length; i += CHUNK_SIZE) {
-    const chunk = newLeads.slice(i, i + CHUNK_SIZE);
+  for (let i = 0; i < toInsert.length; i += CHUNK_SIZE) {
+    const chunk = toInsert.slice(i, i + CHUNK_SIZE);
 
     try {
+      // skipDuplicates: false — we already handled duplicates above,
+      // don't silently drop anything here
       const inserted = await prisma.lead.createMany({
         data: chunk.map((lead) => ({
           personName: lead.personName,
@@ -347,11 +335,13 @@ export const confirmUploadService = async (uploadId, user) => {
           campaignId: upload.campaignId,
           status: "FRESH",
         })),
-        skipDuplicates: true,
+        skipDuplicates: false,
       });
       created += inserted.count;
-    } catch (error) {
-      console.error(`Chunk failed, retrying individually:`, error.message);
+    } catch (err) {
+      // Chunk failed — retry one-by-one so partial failures don't lose the whole chunk
+      console.error("Chunk insert failed, retrying individually:", err.message);
+
       for (const lead of chunk) {
         try {
           await prisma.lead.create({
@@ -366,11 +356,11 @@ export const confirmUploadService = async (uploadId, user) => {
             },
           });
           created++;
-        } catch (singleError) {
+        } catch (singleErr) {
           skipped++;
           errors.push({
             row: lead.rowIndex + 2,
-            error: singleError.message,
+            error: singleErr.message,
             data: lead,
           });
         }
@@ -378,12 +368,12 @@ export const confirmUploadService = async (uploadId, user) => {
     }
   }
 
-  // STEP 5: ONE bulk insert for all activities
+  /* ── STEP 6: Bulk-insert activities for all created leads ── */
   if (created > 0) {
     try {
       const createdLeads = await prisma.lead.findMany({
         where: {
-          phone: { in: newLeads.map((l) => l.phone) },
+          phone: { in: toInsert.map((l) => l.phone) },
           teamId: upload.teamId,
           campaignId: upload.campaignId,
         },
@@ -398,22 +388,22 @@ export const confirmUploadService = async (uploadId, user) => {
           remark: "Imported via Excel",
         })),
       });
-    } catch (activityError) {
-      console.error("Failed to create activities:", activityError.message);
+    } catch (actErr) {
+      console.error("Activity insert failed:", actErr.message);
     }
   }
 
+  /* ── STEP 7: Mark session complete ── */
+  const finalStats = {
+    totalRows: rows.length,
+    created,
+    skipped,
+    ...(errors.length > 0 && { errors }),
+  };
+
   await prisma.uploadSession.update({
     where: { id: uploadId },
-    data: {
-      status: "COMPLETED",
-      stats: {
-        totalRows: rows.length,
-        created,
-        skipped,
-        errors: errors.length > 0 ? errors : undefined,
-      },
-    },
+    data: { status: "COMPLETED", stats: finalStats },
   });
 
   return {

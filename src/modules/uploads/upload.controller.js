@@ -1,10 +1,9 @@
-import fs from "fs";
-import path from "path";
 import prisma from "../../config/db.js";
 import { parseUploadFile, validateMappings } from "./upload.utils.js";
 
 import {
   createUploadSession,
+  selectSheetService,
   saveMappingsService,
   saveDuplicateRulesService,
   assignCampaignService,
@@ -13,16 +12,20 @@ import {
 
 /**
  * STEP 1: Upload file
+ * Returns headers, sampleRows, AND sheets[] so frontend
+ * knows whether to show the sheet picker.
  */
 export const createUpload = async (req, res, next) => {
   try {
     if (!req.file) throw new Error("File is required");
 
-    const { headers, sampleRows } = await parseUploadFile(req.file.path);
+    const { headers, sampleRows, sheets } = await parseUploadFile(
+      req.file.path,
+    );
 
     const upload = await createUploadSession({
       fileName: req.file.originalname,
-      filePath: req.file.path, // ✅ REAL PATH (IMPORTANT)
+      filePath: req.file.path,
       headers,
       sampleRows,
       teamId: req.user.teamId,
@@ -30,7 +33,8 @@ export const createUpload = async (req, res, next) => {
       status: "UPLOADED",
     });
 
-    res.status(201).json(upload);
+    // Return sheets so frontend can decide to show sheet picker
+    res.status(201).json({ ...upload, sheets });
   } catch (err) {
     next(err);
   }
@@ -43,60 +47,66 @@ export const getUploadSession = async (req, res, next) => {
   try {
     const upload = await prisma.uploadSession.findUnique({
       where: { id: req.params.id },
-      include: {
-        mappings: true,
-        duplicateRules: true,
-        campaign: true,
-      },
+      include: { mappings: true, duplicateRules: true, campaign: true },
     });
 
-    if (!upload) {
-      return res.status(404).json({ message: "Upload not found" });
-    }
+    if (!upload) return res.status(404).json({ message: "Upload not found" });
 
-    res.json(upload);
+    // Re-derive sheets from the file so the frontend always has them
+    try {
+      const { sheets } = await parseUploadFile(upload.filePath);
+      return res.json({ ...upload, sheets });
+    } catch (_) {
+      // File might be gone — return session without sheets
+      return res.json(upload);
+    }
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * STEP 2: Save mappings
+ * STEP 1.5: Select sheet (multi-sheet Excel only)
+ * Body: { sheetName: string }
+ */
+export const selectSheet = async (req, res, next) => {
+  try {
+    const { sheetName } = req.body;
+    if (!sheetName)
+      return res.status(400).json({ error: "sheetName is required" });
+
+    const result = await selectSheetService(req.params.id, sheetName);
+    res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * STEP 2: Save field mappings
  */
 export const saveMappings = async (req, res, next) => {
   try {
     const { mappings } = req.body;
-
     validateMappings(mappings);
-
-    const upload = await saveMappingsService(req.params.id, mappings);
-
-    res.json(upload);
+    res.json(await saveMappingsService(req.params.id, mappings));
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * STEP 3: Save duplicate rule (SINGLE RULE – UI MATCH)
+ * STEP 3: Save duplicate rule
+ * Body: { field: string, action: "SKIP" | "UPDATE" | "KEEP_BOTH" }
  */
 export const saveDuplicateRules = async (req, res, next) => {
   try {
     const { field, action } = req.body;
+    if (!field || !action)
+      return res.status(400).json({ message: "field and action are required" });
 
-    if (!field || !action) {
-      return res.status(400).json({
-        message: "field and action are required",
-      });
-    }
-
-    const preview = await saveDuplicateRulesService(
-      req.params.id,
-      field,
-      action,
-    );
-
-    res.json(preview);
+    res.json(await saveDuplicateRulesService(req.params.id, field, action));
   } catch (err) {
     next(err);
   }
@@ -107,25 +117,18 @@ export const saveDuplicateRules = async (req, res, next) => {
  */
 export const assignCampaign = async (req, res, next) => {
   try {
-    const upload = await assignCampaignService(
-      req.params.id,
-      req.body,
-      req.user,
-    );
-
-    res.json(upload);
+    res.json(await assignCampaignService(req.params.id, req.body, req.user));
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * STEP 5: Confirm & import
+ * STEP 5: Confirm & import leads
  */
 export const confirmUpload = async (req, res, next) => {
   try {
-    const result = await confirmUploadService(req.params.id, req.user);
-    res.json(result);
+    res.json(await confirmUploadService(req.params.id, req.user));
   } catch (err) {
     next(err);
   }
