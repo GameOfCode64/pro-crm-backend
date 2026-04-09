@@ -490,6 +490,8 @@ export const getLeadForms = async (req, res, next) => {
 export const getMyLeads = async (req, res, next) => {
   try {
     const userId = req.user.id;
+    const campaignId = req.query.campaignId; // ← filter by campaign when provided
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -497,44 +499,23 @@ export const getMyLeads = async (req, res, next) => {
       where: {
         assignedToId: userId,
         teamId: req.user.teamId,
-        status: {
-          notIn: ["WON", "LOST"],
-        },
+        status: { notIn: ["WON", "LOST"] },
+        // Only add campaignId filter when explicitly requested
+        ...(campaignId ? { campaignId } : {}),
       },
       include: {
-        assignedTo: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        campaign: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+        assignedTo: { select: { id: true, name: true } },
+        campaign: { select: { id: true, name: true } },
         activities: {
-          where: {
-            createdAt: {
-              gte: today,
-            },
-            type: "CALL",
-          },
-          select: {
-            id: true,
-            createdAt: true,
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
+          where: { createdAt: { gte: today }, type: "CALL" },
+          select: { id: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
           take: 1,
         },
       },
       orderBy: [{ followUpAt: "asc" }, { createdAt: "asc" }],
     });
 
-    // Add computed fields
     const enrichedLeads = leads.map((lead) => ({
       ...lead,
       calledToday: lead.activities.length > 0,
@@ -546,7 +527,6 @@ export const getMyLeads = async (req, res, next) => {
     next(err);
   }
 };
-
 /* ================= COMPLETE LEAD CALL ================= */
 
 export const completeLead = async (req, res, next) => {
