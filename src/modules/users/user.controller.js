@@ -6,11 +6,23 @@ const handleErr = (err, res, next) => {
   next(err);
 };
 
-/* ────────────────────────────────────────────────────────────────
-   EXISTING
-──────────────────────────────────────────────────────────────── */
+/**
+ * Resolve the team a manager controls.
+ * Manager User.teamId is often NULL — they own the team via Team.managerId.
+ */
+const resolveTeamId = async (user) => {
+  if (user.teamId) return user.teamId;
+  const managed = await prisma.team.findUnique({
+    where: { managerId: user.id },
+    select: { id: true },
+  });
+  if (!managed)
+    throw Object.assign(new Error("Manager has no team."), { status: 400 });
+  return managed.id;
+};
 
-/** GET /users/me */
+/* EXISTING */
+
 export const getMe = async (req, res, next) => {
   try {
     res.json(await service.getMe(req.user.id));
@@ -19,7 +31,6 @@ export const getMe = async (req, res, next) => {
   }
 };
 
-/** GET /users — admin/manager list */
 export const listUsers = async (req, res, next) => {
   try {
     res.json(await service.listUsers(req.user));
@@ -28,21 +39,20 @@ export const listUsers = async (req, res, next) => {
   }
 };
 
-/** GET /users/employees — active employees for lead-assignment dropdowns */
 export const getEmployees = async (req, res, next) => {
   try {
+    const teamId = await resolveTeamId(req.user);
     const employees = await prisma.user.findMany({
-      where: { teamId: req.user.teamId, role: "EMPLOYEE", isActive: true },
+      where: { teamId, role: "EMPLOYEE", isActive: true },
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true, teamId: true },
     });
     res.json(employees);
   } catch (err) {
-    next(err);
+    handleErr(err, res, next);
   }
 };
 
-/** PATCH /users/:id/status — legacy toggle */
 export const toggleUserStatus = async (req, res, next) => {
   try {
     res.json(await service.toggleUserStatus(req.params.id));
@@ -51,27 +61,35 @@ export const toggleUserStatus = async (req, res, next) => {
   }
 };
 
-/* ────────────────────────────────────────────────────────────────
-   TEAM MANAGEMENT  — /users/team-members/*
-──────────────────────────────────────────────────────────────── */
+/* TEAM MANAGEMENT */
 
-/** GET /users/team-members */
 export const getTeamMembers = async (req, res, next) => {
   try {
-    res.json(await service.getTeamMembers({ teamId: req.user.teamId }));
+    const teamId = await resolveTeamId(req.user);
+    res.json(await service.getTeamMembers({ teamId }));
   } catch (err) {
-    next(err);
+    handleErr(err, res, next);
   }
 };
 
-/** POST /users/team-members */
 export const createTeamMember = async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, username, password, role } = req.body;
+    if (!name?.trim())
+      return res.status(400).json({ error: "Name is required" });
+    if (!email?.trim())
+      return res.status(400).json({ error: "Email is required" });
+    if (!password || password.length < 6)
+      return res
+        .status(400)
+        .json({ error: "Password must be at least 6 characters" });
+
+    const teamId = await resolveTeamId(req.user);
     const member = await service.createTeamMember({
-      teamId: req.user.teamId,
+      teamId,
       name,
       email,
+      username,
       password,
       role,
     });
@@ -81,14 +99,14 @@ export const createTeamMember = async (req, res, next) => {
   }
 };
 
-/** PATCH /users/team-members/:id */
 export const updateTeamMember = async (req, res, next) => {
   try {
     const { name, email, role } = req.body;
+    const teamId = await resolveTeamId(req.user);
     res.json(
       await service.updateTeamMember({
         id: req.params.id,
-        teamId: req.user.teamId,
+        teamId,
         name,
         email,
         role,
@@ -99,13 +117,13 @@ export const updateTeamMember = async (req, res, next) => {
   }
 };
 
-/** PATCH /users/team-members/:id/reset-password */
 export const resetMemberPassword = async (req, res, next) => {
   try {
+    const teamId = await resolveTeamId(req.user);
     res.json(
       await service.resetMemberPassword({
         id: req.params.id,
-        teamId: req.user.teamId,
+        teamId,
         password: req.body.password,
       }),
     );
@@ -114,17 +132,16 @@ export const resetMemberPassword = async (req, res, next) => {
   }
 };
 
-/** PATCH /users/team-members/:id/leave-status  — body: { isActive: boolean } */
 export const setMemberLeaveStatus = async (req, res, next) => {
   try {
     const { isActive } = req.body;
     if (typeof isActive !== "boolean")
       return res.status(400).json({ error: "isActive (boolean) is required" });
-
+    const teamId = await resolveTeamId(req.user);
     res.json(
       await service.setMemberLeaveStatus({
         id: req.params.id,
-        teamId: req.user.teamId,
+        teamId,
         isActive,
       }),
     );
@@ -133,39 +150,26 @@ export const setMemberLeaveStatus = async (req, res, next) => {
   }
 };
 
-/** POST /users/team-members/:id/check-in  — manager clocks in on behalf */
 export const checkIn = async (req, res, next) => {
   try {
-    res.json(
-      await service.checkIn({
-        userId: req.params.id,
-        teamId: req.user.teamId,
-      }),
-    );
+    const teamId = await resolveTeamId(req.user);
+    res.json(await service.checkIn({ userId: req.params.id, teamId }));
   } catch (err) {
     handleErr(err, res, next);
   }
 };
 
-/** POST /users/team-members/:id/check-out  — manager clocks out on behalf */
 export const checkOut = async (req, res, next) => {
   try {
-    res.json(
-      await service.checkOut({
-        userId: req.params.id,
-        teamId: req.user.teamId,
-      }),
-    );
+    const teamId = await resolveTeamId(req.user);
+    res.json(await service.checkOut({ userId: req.params.id, teamId }));
   } catch (err) {
     handleErr(err, res, next);
   }
 };
 
-/* ────────────────────────────────────────────────────────────────
-   SELF-SERVICE ATTENDANCE  — /users/me/*
-──────────────────────────────────────────────────────────────── */
+/* SELF-SERVICE ATTENDANCE */
 
-/** GET /users/me/attendance */
 export const getMyAttendance = async (req, res) => {
   try {
     res.json(await service.getMyAttendance(req.user.id));
@@ -175,7 +179,6 @@ export const getMyAttendance = async (req, res) => {
   }
 };
 
-/** GET /users/me/attendance/history — last 30 days */
 export const getMyAttendanceHistory = async (req, res) => {
   try {
     res.json(await service.getMyAttendanceHistory(req.user.id));
@@ -185,26 +188,24 @@ export const getMyAttendanceHistory = async (req, res) => {
   }
 };
 
-/** POST /users/me/clock-in */
 export const selfClockIn = async (req, res) => {
   try {
-    res.json(
-      await service.checkIn({ userId: req.user.id, teamId: req.user.teamId }),
-    );
+    const teamId = await resolveTeamId(req.user).catch(() => req.user.teamId);
+    res.json(await service.checkIn({ userId: req.user.id, teamId }));
   } catch (e) {
-    const status = e.status ?? 500;
-    res.status(status).json({ error: e.message ?? "Failed to clock in" });
+    res
+      .status(e.status ?? 500)
+      .json({ error: e.message ?? "Failed to clock in" });
   }
 };
 
-/** POST /users/me/clock-out */
 export const selfClockOut = async (req, res) => {
   try {
-    res.json(
-      await service.checkOut({ userId: req.user.id, teamId: req.user.teamId }),
-    );
+    const teamId = await resolveTeamId(req.user).catch(() => req.user.teamId);
+    res.json(await service.checkOut({ userId: req.user.id, teamId }));
   } catch (e) {
-    const status = e.status ?? 500;
-    res.status(status).json({ error: e.message ?? "Failed to clock out" });
+    res
+      .status(e.status ?? 500)
+      .json({ error: e.message ?? "Failed to clock out" });
   }
 };

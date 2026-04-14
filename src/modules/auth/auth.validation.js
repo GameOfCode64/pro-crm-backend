@@ -1,14 +1,15 @@
 export const validateLogin = (body) => {
-  if (!body.email || !body.password) {
-    return "Email and password are required";
-  }
+  // Accept either email or username + password
+  const identifier = body.email || body.username;
+  if (!identifier) return "Email or username is required";
+  if (!body.password) return "Password is required";
   return null;
 };
 
 export const validateCreateUser = (body) => {
-  const required = ["email", "password"];
-  for (const field of required) {
-    if (!body[field]) return `${field} is required`;
-  }
+  if (!body.name?.trim()) return "Name is required";
+  if (!body.email?.trim()) return "Email is required";
+  if (!body.password) return "Password is required";
+  if (body.password.length < 6) return "Password must be at least 6 characters";
   return null;
 };

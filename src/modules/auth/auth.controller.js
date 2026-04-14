@@ -9,7 +9,8 @@ export const login = async (req, res, next) => {
     const data = await service.login(req.body);
     res.json(data);
   } catch (err) {
-    next(err);
+    const status = err.status ?? 500;
+    res.status(status).json({ message: err.message });
   }
 };
 
@@ -21,6 +22,7 @@ export const createUser = async (req, res, next) => {
     const user = await service.createUser(req.user, req.body);
     res.status(201).json(user);
   } catch (err) {
-    next(err);
+    const status = err.status ?? 500;
+    res.status(status).json({ message: err.message });
   }
 };

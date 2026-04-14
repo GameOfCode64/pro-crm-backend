@@ -151,6 +151,7 @@ export const createTeamMember = async ({
   teamId,
   name,
   email,
+  username,
   password,
   role = "EMPLOYEE",
 }) => {
@@ -159,15 +160,25 @@ export const createTeamMember = async ({
   if (!password || password.length < 6)
     throw err("Password must be at least 6 characters", 400);
 
-  const clash = await prisma.user.findUnique({
+  // Email uniqueness
+  const emailClash = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
   });
-  if (clash) throw err("Email already in use", 409);
+  if (emailClash) throw err("Email already in use", 409);
+
+  // Username uniqueness (if provided)
+  if (username?.trim()) {
+    const userClash = await prisma.user.findUnique({
+      where: { username: username.trim() },
+    });
+    if (userClash) throw err("Username already taken", 409);
+  }
 
   return prisma.user.create({
     data: {
       name: name.trim(),
       email: email.toLowerCase().trim(),
+      username: username?.trim() || null,
       password: await bcrypt.hash(password, 12),
       role,
       teamId,
@@ -176,6 +187,7 @@ export const createTeamMember = async ({
     select: {
       id: true,
       name: true,
+      username: true,
       email: true,
       role: true,
       isActive: true,
@@ -338,6 +350,10 @@ export const checkOut = async ({ userId, teamId }) => {
         clockIn: existing?.clockIn ?? new Date(),
         clockOut: new Date(),
       },
+    }),
+    prisma.user.update({
+      where: { id: userId },
+      data: { isActive: false },
     }),
   ]);
 
