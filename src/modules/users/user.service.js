@@ -200,15 +200,31 @@ export const createTeamMember = async ({
  * PATCH /users/team-members/:id
  * Update name / email / role (no phone — not in schema).
  */
-export const updateTeamMember = async ({ id, teamId, name, email, role }) => {
+export const updateTeamMember = async ({
+  id,
+  teamId,
+  name,
+  email,
+  username,
+  role,
+}) => {
   const target = await prisma.user.findFirst({ where: { id, teamId } });
   if (!target) throw err("User not found", 404);
 
+  // Email uniqueness (skip if unchanged)
   if (email && email.toLowerCase() !== target.email) {
     const clash = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });
     if (clash) throw err("Email already in use", 409);
+  }
+
+  // Username uniqueness (skip if unchanged or clearing)
+  if (username?.trim() && username.trim() !== target.username) {
+    const clash = await prisma.user.findUnique({
+      where: { username: username.trim() },
+    });
+    if (clash) throw err("Username already taken", 409);
   }
 
   return prisma.user.update({
@@ -217,10 +233,13 @@ export const updateTeamMember = async ({ id, teamId, name, email, role }) => {
       ...(name !== undefined && { name: name.trim() }),
       ...(email !== undefined && { email: email.toLowerCase().trim() }),
       ...(role !== undefined && { role }),
+      // null clears the username; non-empty string sets it
+      ...(username !== undefined && { username: username?.trim() || null }),
     },
     select: {
       id: true,
       name: true,
+      username: true,
       email: true,
       role: true,
       isActive: true,

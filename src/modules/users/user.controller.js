@@ -101,7 +101,7 @@ export const createTeamMember = async (req, res, next) => {
 
 export const updateTeamMember = async (req, res, next) => {
   try {
-    const { name, email, role } = req.body;
+    const { name, email, username, role } = req.body;
     const teamId = await resolveTeamId(req.user);
     res.json(
       await service.updateTeamMember({
@@ -109,6 +109,7 @@ export const updateTeamMember = async (req, res, next) => {
         teamId,
         name,
         email,
+        username,
         role,
       }),
     );
