@@ -1,5 +1,5 @@
 import prisma from "../../config/db.js";
-import { ensurePipelineDefaults } from "./pipeline.seed.js";
+// import { ensurePipelineDefaults } from "./pipeline.seed.js";
 import {
   getPipelineData,
   createOutcomeService,
@@ -23,7 +23,7 @@ export const getPipeline = async (req, res, next) => {
     }
 
     // 🔥 Ensure system defaults exist
-    await ensurePipelineDefaults(user.teamId);
+    // await ensurePipelineDefaults(user.teamId);
 
     const pipeline = await getPipelineData(user.teamId);
 
