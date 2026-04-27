@@ -74,7 +74,7 @@ export const getTeamMembers = async (req, res, next) => {
 
 export const createTeamMember = async (req, res, next) => {
   try {
-    const { name, email, username, password, role } = req.body;
+    const { name, email, username, phone, password, role } = req.body;
     if (!name?.trim())
       return res.status(400).json({ error: "Name is required" });
     if (!email?.trim())
@@ -90,6 +90,7 @@ export const createTeamMember = async (req, res, next) => {
       name,
       email,
       username,
+      phone,
       password,
       role,
     });
@@ -101,7 +102,7 @@ export const createTeamMember = async (req, res, next) => {
 
 export const updateTeamMember = async (req, res, next) => {
   try {
-    const { name, email, username, role } = req.body;
+    const { name, email, username, phone, role } = req.body;
     const teamId = await resolveTeamId(req.user);
     res.json(
       await service.updateTeamMember({
@@ -110,6 +111,7 @@ export const updateTeamMember = async (req, res, next) => {
         name,
         email,
         username,
+        phone,
         role,
       }),
     );

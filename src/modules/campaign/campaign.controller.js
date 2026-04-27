@@ -2,6 +2,7 @@ import {
   getCampaignsService,
   createCampaignService,
   getMyCampaignsService,
+  deleteCampaignService,
 } from "./campaign.service.js";
 
 /**
@@ -46,6 +47,19 @@ export const createCampaign = async (req, res, next) => {
 
     res.status(201).json(campaign);
   } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteCampaign = async (req, res, next) => {
+  try {
+    const result = await deleteCampaignService({
+      id: req.params.id,
+      teamId: req.user.teamId, // scoped to manager's team
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 };

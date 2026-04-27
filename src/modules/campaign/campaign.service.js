@@ -153,3 +153,62 @@ export const getMyCampaignsService = async ({ userId, teamId }) => {
 
   return result;
 };
+
+export const deleteCampaignService = async ({ id, teamId }) => {
+  // Verify campaign exists and belongs to this team
+  const campaign = await prisma.campaign.findFirst({
+    where: { id, teamId },
+    select: { id: true, name: true },
+  });
+
+  if (!campaign)
+    throw Object.assign(new Error("Campaign not found"), { status: 404 });
+
+  // Delete in dependency order — children before parents
+  // so FK constraints don't block the delete.
+  await prisma.$transaction(async (tx) => {
+    // 1. Lead activities (reference leads)
+    await tx.leadActivity.deleteMany({
+      where: { lead: { campaignId: id } },
+    });
+
+    // 2. Form responses (reference leads)
+    await tx.formResponse.deleteMany({
+      where: { lead: { campaignId: id } },
+    });
+
+    // 3. Unassign leads from employees + clear status
+    //    (we keep leads but detach from campaign so history isn't wiped)
+    //    — OR hard-delete them if your product wants full cleanup:
+    await tx.lead.deleteMany({
+      where: { campaignId: id },
+    });
+
+    // 4. Upload session field mappings + duplicate rules
+    const uploadIds = (
+      await tx.uploadSession.findMany({
+        where: { campaignId: id },
+        select: { id: true },
+      })
+    ).map((u) => u.id);
+
+    if (uploadIds.length > 0) {
+      await tx.uploadFieldMapping.deleteMany({
+        where: { uploadId: { in: uploadIds } },
+      });
+      await tx.uploadDuplicateRule.deleteMany({
+        where: { uploadId: { in: uploadIds } },
+      });
+      await tx.uploadSession.deleteMany({
+        where: { id: { in: uploadIds } },
+      });
+    }
+
+    // 5. Finally delete the campaign itself
+    await tx.campaign.delete({
+      where: { id },
+    });
+  });
+
+  return { success: true, deleted: campaign.name };
+};

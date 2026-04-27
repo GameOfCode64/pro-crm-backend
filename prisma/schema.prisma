@@ -65,7 +65,8 @@ enum IntegrationProvider {
 model User {
     id       String  @id @default(uuid())
     name     String
-    username String? @unique
+    username String? @unique // optional — for username-based login
+    phone    String? // optional contact number
     email    String  @unique
     password String
     role     Role
@@ -337,11 +338,12 @@ model FormResponse {
  */
 
 model UploadSession {
-    id         String @id @default(uuid())
-    fileName   String
-    filePath   String
-    headers    Json
-    sampleRows Json
+    id            String  @id @default(uuid())
+    fileName      String
+    filePath      String
+    selectedSheet String? // which sheet was chosen for multi-sheet Excel files
+    headers       Json
+    sampleRows    Json
 
     status      String
     teamId      String

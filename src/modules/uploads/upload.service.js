@@ -70,11 +70,9 @@ export const selectSheetService = async (uploadId, sheetName) => {
 
   const updated = await prisma.uploadSession.update({
     where: { id: uploadId },
-    data: { headers, sampleRows },
+    data: { selectedSheet: sheetName, headers, sampleRows },
   });
 
-  // Return the updated session PLUS the full sheet list so
-  // the frontend can still display / navigate the picker
   return { ...updated, sheets, activeSheet: sheetName };
 };
 
@@ -112,7 +110,10 @@ export const saveDuplicateRulesService = async (uploadId, field, action) => {
   const upload = await prisma.uploadSession.findUnique({
     where: { id: uploadId },
   });
-  const { rows } = await parseUploadFile(upload.filePath);
+  const { rows } = await parseUploadFile(
+    upload.filePath,
+    upload.selectedSheet ?? null,
+  );
 
   const existingPhones = new Set(
     (
@@ -183,7 +184,11 @@ export const confirmUploadService = async (uploadId, user) => {
   if (!upload) throw new Error("Upload not found");
   if (!upload.campaignId) throw new Error("Campaign not assigned");
 
-  const { rows } = await parseUploadFile(upload.filePath);
+  // Always parse the sheet the user actually selected
+  const { rows } = await parseUploadFile(
+    upload.filePath,
+    upload.selectedSheet ?? null,
+  );
 
   let created = 0;
   let skipped = 0;

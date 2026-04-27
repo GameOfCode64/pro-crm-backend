@@ -105,6 +105,8 @@ export const getTeamMembers = async ({ teamId }) => {
         name: true,
         email: true,
         role: true,
+        username: true,
+        phone: true,
         isActive: true,
         createdAt: true,
         _count: { select: { assignedLeads: true } },
@@ -152,6 +154,7 @@ export const createTeamMember = async ({
   name,
   email,
   username,
+  phone,
   password,
   role = "EMPLOYEE",
 }) => {
@@ -179,6 +182,7 @@ export const createTeamMember = async ({
       name: name.trim(),
       email: email.toLowerCase().trim(),
       username: username?.trim() || null,
+      phone: phone?.trim() || null,
       password: await bcrypt.hash(password, 12),
       role,
       teamId,
@@ -188,6 +192,7 @@ export const createTeamMember = async ({
       id: true,
       name: true,
       username: true,
+      phone: true,
       email: true,
       role: true,
       isActive: true,
@@ -206,6 +211,7 @@ export const updateTeamMember = async ({
   name,
   email,
   username,
+  phone,
   role,
 }) => {
   const target = await prisma.user.findFirst({ where: { id, teamId } });
@@ -233,13 +239,14 @@ export const updateTeamMember = async ({
       ...(name !== undefined && { name: name.trim() }),
       ...(email !== undefined && { email: email.toLowerCase().trim() }),
       ...(role !== undefined && { role }),
-      // null clears the username; non-empty string sets it
       ...(username !== undefined && { username: username?.trim() || null }),
+      ...(phone !== undefined && { phone: phone?.trim() || null }),
     },
     select: {
       id: true,
       name: true,
       username: true,
+      phone: true,
       email: true,
       role: true,
       isActive: true,
@@ -369,10 +376,6 @@ export const checkOut = async ({ userId, teamId }) => {
         clockIn: existing?.clockIn ?? new Date(),
         clockOut: new Date(),
       },
-    }),
-    prisma.user.update({
-      where: { id: userId },
-      data: { isActive: false },
     }),
   ]);
 
