@@ -35,7 +35,8 @@ router.use("/teams", teamRoutes);
  */
 router.use("/attendance", attendanceRoutes);
 router.use("/campaigns", campaignRoutes);
-router.use("/leads", leadRoutes);
+// --->>>>>>>>
+router.use("/leadss", leadRoutes);
 
 /**
  * BUSINESS MODULES
@@ -43,7 +44,8 @@ router.use("/leads", leadRoutes);
 router.use("/uploads", uploadsRoutes);
 router.use("/forms", formRoutes);
 router.use("/reports", reportRoutes);
-router.use("/pipeline", pipelineRoutes);
+// --->>>>>>>>
+router.use("/pipelines", pipelineRoutes);
 router.use("/dashboard", dashboardRoutes);
 
 /**
